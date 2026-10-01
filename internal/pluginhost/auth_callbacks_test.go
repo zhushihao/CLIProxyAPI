@@ -414,6 +414,9 @@ func TestKnownUsageCachePluginHost(t *testing.T) {
 		}
 		if err := h.upsertAuthRecord(context.Background(), a); err == nil {
 			t.Fatal("cache registered")
+		}
+	}
+}
 
 func TestHostAuthSaveCallbackPreservesDisabledState(t *testing.T) {
 	authDir := t.TempDir()

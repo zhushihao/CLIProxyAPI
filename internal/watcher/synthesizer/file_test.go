@@ -1035,6 +1035,8 @@ func TestKnownUsageCacheSynthesis(t *testing.T) {
 		if err != nil || len(auths) != 0 {
 			t.Fatalf("cache synthesized: %v %d", err, len(auths))
 		}
+	}
+}
 
 func makeTestCodexJWT(planType string) string {
 	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none","typ":"JWT"}`))
