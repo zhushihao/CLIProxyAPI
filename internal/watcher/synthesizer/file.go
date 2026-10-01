@@ -45,7 +45,7 @@ func (s *FileSynthesizer) Synthesize(ctx *SynthesisContext) ([]*coreauth.Auth, e
 			continue
 		}
 		name := e.Name()
-		if !strings.HasSuffix(strings.ToLower(name), ".json") {
+		if coreauth.IsKnownUsageCache(name) || !strings.HasSuffix(strings.ToLower(name), ".json") {
 			continue
 		}
 		full := filepath.Join(ctx.AuthDir, name)
@@ -73,7 +73,7 @@ func SynthesizeAuthFile(ctx *SynthesisContext, fullPath string, data []byte) ([]
 }
 
 func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([]*coreauth.Auth, error) {
-	if ctx == nil || len(data) == 0 {
+	if coreauth.IsKnownUsageCache(fullPath) || ctx == nil || len(data) == 0 {
 		return nil, nil
 	}
 	now := ctx.Now

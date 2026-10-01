@@ -2,6 +2,26 @@ package auth
 
 import "strings"
 
+// IsKnownUsageCache excludes only the two reserved plugin ledger basenames.
+func IsKnownUsageCache(path string) bool {
+	if i := strings.LastIndexAny(path, `/\`); i >= 0 {
+		path = path[i+1:]
+	}
+	return strings.EqualFold(path, ".qoder-usage.json") || strings.EqualFold(path, ".workbuddy-usage.json")
+}
+
+// IsKnownUsageCacheAuth checks physical source metadata, never provider names.
+func IsKnownUsageCacheAuth(a *Auth) bool {
+	if a == nil {
+		return false
+	}
+	if IsKnownUsageCache(a.FileName) || IsKnownUsageCache(authAttribute(a, AttributePath)) {
+		return true
+	}
+	source := authAttribute(a, AttributeSource)
+	return source != "" && !strings.HasPrefix(source, "config:") && IsKnownUsageCache(source)
+}
+
 const (
 	AuthKindAPIKey = "apikey"
 	AuthKindOAuth  = "oauth"

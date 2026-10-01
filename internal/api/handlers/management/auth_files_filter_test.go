@@ -258,3 +258,141 @@ func registerAuthForLookupTest(t *testing.T, manager *coreauth.Manager, auth *co
 		t.Fatalf("register auth %q: %v", auth.ID, errRegister)
 	}
 }
+
+func TestKnownUsageCacheManagement(t *testing.T) {
+	dir := t.TempDir()
+	h := &Handler{cfg: &config.Config{AuthDir: dir}}
+	for _, name := range []string{".qoder-usage.json", ".workbuddy-usage.json"} {
+		path := filepath.Join(dir, name)
+		os.WriteFile(path, []byte(`{"type":"custom"}`), 0600)
+		a := &coreauth.Auth{ID: "virtual", Attributes: map[string]string{"path": path}}
+		if isAuthFileListable(a) {
+			t.Fatal("cache source listed")
+		}
+		if err := h.writeAuthFile(context.Background(), name, []byte(`{"type":"custom"}`)); err == nil {
+			t.Fatal("cache uploaded")
+		}
+		if _, _, err := h.deleteAuthFileByName(context.Background(), name); err == nil {
+			t.Fatal("cache deleted")
+		}
+		rec := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(rec)
+		c.Request = httptest.NewRequest(http.MethodGet, "/?name="+name, nil)
+		h.DownloadAuthFile(c)
+		if rec.Code != 400 {
+			t.Fatalf("download code %d", rec.Code)
+		}
+		if _, err := os.Stat(path); err != nil {
+			t.Fatal("ledger lost")
+		}
+	}
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
+	h.ListAuthFiles(c)
+	if strings.Contains(rec.Body.String(), "usage.json") {
+		t.Fatal("disk list leaks ledger")
+	}
+}
+
+func TestKnownUsageCacheMemoryListRejected(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "")
+
+	authDir := t.TempDir()
+	cachePath := filepath.Join(authDir, ".qoder-usage.json")
+	if errWrite := os.WriteFile(cachePath, []byte(`{"type":"custom"}`), 0o600); errWrite != nil {
+		t.Fatalf("failed to write cache file: %v", errWrite)
+	}
+
+	manager := coreauth.NewManager(nil, nil, nil)
+	registerAuthForLookupTest(t, manager, &coreauth.Auth{
+		ID:       "polluted-cache",
+		FileName: ".qoder-usage.json",
+		Provider: "custom",
+		Status:   coreauth.StatusActive,
+		Attributes: map[string]string{
+			"path": cachePath,
+		},
+	})
+	registerAuthForLookupTest(t, manager, &coreauth.Auth{
+		ID:       "legit-account",
+		FileName: "legit.json",
+		Provider: "codex",
+		Status:   coreauth.StatusActive,
+		Attributes: map[string]string{
+			"path": filepath.Join(authDir, "legit.json"),
+		},
+	})
+
+	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: authDir}, manager)
+
+	// Default (non-paginated) memory branch must reject the cache record and keep legit accounts.
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/v0/management/auth-files", nil)
+	h.ListAuthFiles(ctx)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "qoder-usage") {
+		t.Fatalf("default memory list leaks cache: %s", rec.Body.String())
+	}
+	var payload struct {
+		Files []map[string]any `json:"files"`
+	}
+	if errDecode := json.Unmarshal(rec.Body.Bytes(), &payload); errDecode != nil {
+		t.Fatalf("decode response: %v", errDecode)
+	}
+	if len(payload.Files) != 1 || payload.Files[0]["name"] != "legit.json" {
+		t.Fatalf("files = %#v, want only legit.json", payload.Files)
+	}
+
+	// Paginated memory branch must reject the cache record too.
+	rec = httptest.NewRecorder()
+	ctx, _ = gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/v0/management/auth-files?page=1&page_size=10", nil)
+	h.ListAuthFiles(ctx)
+	if strings.Contains(rec.Body.String(), "qoder-usage") {
+		t.Fatalf("paginated memory list leaks cache: %s", rec.Body.String())
+	}
+}
+
+func TestPatchAuthFileFieldsRejectsKnownUsageCache(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "")
+
+	authDir := t.TempDir()
+	cachePath := filepath.Join(authDir, ".workbuddy-usage.json")
+	if errWrite := os.WriteFile(cachePath, []byte(`{"type":"custom"}`), 0o600); errWrite != nil {
+		t.Fatalf("failed to write cache file: %v", errWrite)
+	}
+
+	manager := coreauth.NewManager(nil, nil, nil)
+	registerAuthForLookupTest(t, manager, &coreauth.Auth{
+		ID:       "polluted-cache",
+		FileName: ".workbuddy-usage.json",
+		Provider: "custom",
+		Status:   coreauth.StatusActive,
+		Attributes: map[string]string{
+			"path": cachePath,
+		},
+	})
+
+	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: authDir}, manager)
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodPatch, "/v0/management/auth-files/fields", strings.NewReader(`{"name":".workbuddy-usage.json","note":"x"}`))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+	h.PatchAuthFileFields(ctx)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d body=%s", rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+	auth, ok := manager.GetByID("polluted-cache")
+	if !ok {
+		t.Fatal("expected record to exist")
+	}
+	if auth.Metadata != nil {
+		if note, has := auth.Metadata["note"]; has {
+			t.Fatalf("cache record mutated: %v", note)
+		}
+	}
+}

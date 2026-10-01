@@ -262,6 +262,9 @@ func compareAuthFileListOrder(left, right *coreauth.Auth) int {
 }
 
 func isAuthFileListable(auth *coreauth.Auth) bool {
+	if coreauth.IsKnownUsageCacheAuth(auth) {
+		return false
+	}
 	if auth == nil {
 		return false
 	}
@@ -309,12 +312,12 @@ func (h *Handler) lookupAuthFile(name string, authIndex string) (*coreauth.Auth,
 		return nil, false
 	}
 	if authIndex == "" {
-		if auth, ok := h.authManager.GetByID(name); ok {
+		if auth, ok := h.authManager.GetByID(name); ok && !coreauth.IsKnownUsageCacheAuth(auth) {
 			return auth, true
 		}
 		auths := h.authManager.List()
 		for _, auth := range auths {
-			if auth != nil && strings.TrimSpace(auth.FileName) == name {
+			if auth != nil && !coreauth.IsKnownUsageCacheAuth(auth) && strings.TrimSpace(auth.FileName) == name {
 				return auth, true
 			}
 		}
@@ -322,7 +325,7 @@ func (h *Handler) lookupAuthFile(name string, authIndex string) (*coreauth.Auth,
 	}
 	auths := h.authManager.List()
 	for _, auth := range auths {
-		if matchesAuthFileLookup(auth, name, authIndex) {
+		if !coreauth.IsKnownUsageCacheAuth(auth) && matchesAuthFileLookup(auth, name, authIndex) {
 			return auth, true
 		}
 	}
@@ -342,7 +345,7 @@ func (h *Handler) GetAuthFileModels(c *gin.Context) {
 	if h.authManager != nil {
 		auths := h.authManager.List()
 		for _, auth := range auths {
-			if auth.FileName == name || auth.ID == name {
+			if auth != nil && !coreauth.IsKnownUsageCacheAuth(auth) && (auth.FileName == name || auth.ID == name) {
 				authID = auth.ID
 				break
 			}
@@ -400,7 +403,7 @@ func (h *Handler) listAuthFilesFromDisk(c *gin.Context, pagination authFilesPagi
 		if nameFilter != "" && name != nameFilter {
 			continue
 		}
-		if !strings.HasSuffix(strings.ToLower(name), ".json") {
+		if coreauth.IsKnownUsageCache(name) || !strings.HasSuffix(strings.ToLower(name), ".json") {
 			continue
 		}
 		if info, errInfo := e.Info(); errInfo == nil {
@@ -635,6 +638,9 @@ func reconcileAuthFileCooldownState(auth *coreauth.Auth, now time.Time) (unavail
 }
 
 func (h *Handler) buildAuthFileEntryLocked(auth *coreauth.Auth, quotaSupported ...map[string]struct{}) gin.H {
+	if coreauth.IsKnownUsageCacheAuth(auth) {
+		return nil
+	}
 	if auth == nil {
 		return nil
 	}
@@ -979,6 +985,9 @@ func isRuntimeOnlyAuth(auth *coreauth.Auth) bool {
 }
 
 func isUnsafeAuthFileName(name string) bool {
+	if coreauth.IsKnownUsageCache(name) {
+		return true
+	}
 	if strings.TrimSpace(name) == "" {
 		return true
 	}

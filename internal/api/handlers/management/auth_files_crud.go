@@ -29,7 +29,7 @@ func (h *Handler) DownloadAuthFile(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "invalid name"})
 		return
 	}
-	if !strings.HasSuffix(strings.ToLower(name), ".json") {
+	if coreauth.IsKnownUsageCache(name) || !strings.HasSuffix(strings.ToLower(name), ".json") {
 		c.JSON(400, gin.H{"error": "name must end with .json"})
 		return
 	}
@@ -112,7 +112,7 @@ func (h *Handler) UploadAuthFile(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "invalid name"})
 		return
 	}
-	if !strings.HasSuffix(strings.ToLower(name), ".json") {
+	if coreauth.IsKnownUsageCache(name) || !strings.HasSuffix(strings.ToLower(name), ".json") {
 		c.JSON(400, gin.H{"error": "name must end with .json"})
 		return
 	}
@@ -147,7 +147,7 @@ func (h *Handler) DeleteAuthFile(c *gin.Context) {
 				continue
 			}
 			name := e.Name()
-			if !strings.HasSuffix(strings.ToLower(name), ".json") {
+			if coreauth.IsKnownUsageCache(name) || !strings.HasSuffix(strings.ToLower(name), ".json") {
 				continue
 			}
 			full := filepath.Join(h.cfg.AuthDir, name)
@@ -239,7 +239,7 @@ func (h *Handler) storeUploadedAuthFile(ctx context.Context, file *multipart.Fil
 		return "", fmt.Errorf("no file uploaded")
 	}
 	name := filepath.Base(strings.TrimSpace(file.Filename))
-	if !strings.HasSuffix(strings.ToLower(name), ".json") {
+	if coreauth.IsKnownUsageCache(name) || !strings.HasSuffix(strings.ToLower(name), ".json") {
 		return "", errAuthFileMustBeJSON
 	}
 	src, err := file.Open()
@@ -366,6 +366,9 @@ func (h *Handler) deleteAuthFileByName(ctx context.Context, name string) (string
 			targetPath = abs
 		}
 	}
+	if coreauth.IsKnownUsageCache(targetPath) {
+		return "", http.StatusBadRequest, fmt.Errorf("usage cache is not an auth file")
+	}
 	if errRemove := os.Remove(targetPath); errRemove != nil {
 		if os.IsNotExist(errRemove) {
 			return filepath.Base(name), http.StatusNotFound, errAuthFileNotFound
@@ -467,6 +470,9 @@ func (h *Handler) registerAuthFromFile(ctx context.Context, path string, data []
 }
 
 func (h *Handler) buildAuthFromFileData(path string, data []byte) (*coreauth.Auth, error) {
+	if coreauth.IsKnownUsageCache(path) {
+		return nil, fmt.Errorf("usage cache is not an auth file")
+	}
 	if path == "" {
 		return nil, fmt.Errorf("auth path is empty")
 	}
@@ -547,6 +553,9 @@ func (h *Handler) buildAuthFromFileData(path string, data []byte) (*coreauth.Aut
 }
 
 func (h *Handler) upsertAuthRecord(ctx context.Context, auth *coreauth.Auth) error {
+	if coreauth.IsKnownUsageCacheAuth(auth) {
+		return fmt.Errorf("usage cache is not an auth file")
+	}
 	if h == nil || h.authManager == nil || auth == nil {
 		return nil
 	}

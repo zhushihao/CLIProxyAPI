@@ -165,7 +165,7 @@ func (h *Host) listAuthFilesFromDisk() ([]pluginapi.HostAuthFileEntry, error) {
 			continue
 		}
 		name := entry.Name()
-		if !strings.HasSuffix(strings.ToLower(name), ".json") {
+		if coreauth.IsKnownUsageCache(name) || !strings.HasSuffix(strings.ToLower(name), ".json") {
 			continue
 		}
 		full := filepath.Join(authDir, name)
@@ -225,7 +225,7 @@ func (h *Host) authByIndex(authIndex string) (*coreauth.Auth, error) {
 		return nil, fmt.Errorf("core auth manager unavailable")
 	}
 	for _, auth := range manager.List() {
-		if auth == nil {
+		if coreauth.IsKnownUsageCacheAuth(auth) || auth == nil {
 			continue
 		}
 		auth.EnsureIndex()
@@ -267,7 +267,7 @@ func validateHostAuthSaveRequest(req pluginapi.HostAuthSaveRequest) (string, []b
 	if isUnsafeAuthFileName(name) {
 		return "", nil, fmt.Errorf("invalid auth file name")
 	}
-	if !strings.HasSuffix(strings.ToLower(name), ".json") {
+	if coreauth.IsKnownUsageCache(name) || !strings.HasSuffix(strings.ToLower(name), ".json") {
 		return "", nil, fmt.Errorf("auth file name must end with .json")
 	}
 	rawJSON := bytesTrimSpace(req.JSON)
@@ -306,6 +306,9 @@ func (h *Host) saveAuthFile(ctx context.Context, name string, data []byte) (stri
 }
 
 func (h *Host) buildAuthFromFileData(path string, data []byte) (*coreauth.Auth, error) {
+	if coreauth.IsKnownUsageCache(path) {
+		return nil, fmt.Errorf("usage cache is not an auth file")
+	}
 	if strings.TrimSpace(path) == "" {
 		return nil, fmt.Errorf("auth path is empty")
 	}
@@ -363,6 +366,9 @@ func (h *Host) buildAuthFromFileData(path string, data []byte) (*coreauth.Auth, 
 }
 
 func (h *Host) upsertAuthRecord(ctx context.Context, auth *coreauth.Auth) error {
+	if coreauth.IsKnownUsageCacheAuth(auth) {
+		return fmt.Errorf("usage cache is not an auth file")
+	}
 	manager := h.currentAuthManager()
 	if manager == nil || auth == nil {
 		return nil
@@ -377,6 +383,9 @@ func (h *Host) upsertAuthRecord(ctx context.Context, auth *coreauth.Auth) error 
 }
 
 func isUnsafeAuthFileName(name string) bool {
+	if coreauth.IsKnownUsageCache(name) {
+		return true
+	}
 	if strings.TrimSpace(name) == "" {
 		return true
 	}
@@ -390,6 +399,9 @@ func isUnsafeAuthFileName(name string) bool {
 }
 
 func (h *Host) buildHostAuthFileEntry(auth *coreauth.Auth) *pluginapi.HostAuthFileEntry {
+	if coreauth.IsKnownUsageCacheAuth(auth) {
+		return nil
+	}
 	if auth == nil {
 		return nil
 	}

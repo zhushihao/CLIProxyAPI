@@ -1763,3 +1763,44 @@ func TestScheduleProcessEventsStopsOnContextDone(t *testing.T) {
 func hexString(data []byte) string {
 	return strings.ToLower(fmt.Sprintf("%x", data))
 }
+
+func TestKnownUsageCacheRuntimeAndSnapshot(t *testing.T) {
+	w := &Watcher{}
+	cache := &coreauth.Auth{ID: "ledger", FileName: ".qoder-usage.json"}
+	w.DispatchRuntimeAuthUpdate(AuthUpdate{Action: AuthUpdateActionAdd, Auth: cache})
+	if len(w.runtimeAuths) != 0 {
+		t.Fatal("cache registered as runtime auth")
+	}
+	legal := &coreauth.Auth{ID: ".qoder-usage.json", Provider: "custom"}
+	w.DispatchRuntimeAuthUpdate(AuthUpdate{Action: AuthUpdateActionAdd, Auth: legal})
+	if len(w.runtimeAuths) != 1 {
+		t.Fatal("runtime-only ID incorrectly classified")
+	}
+	w.prepareAuthUpdatesLocked([]*coreauth.Auth{cache, legal}, true)
+	if len(w.currentAuths) != 1 || w.currentAuths[legal.ID] == nil {
+		t.Fatal("snapshot cache classification failed")
+	}
+	w.DispatchRuntimeAuthUpdate(AuthUpdate{Action: AuthUpdateActionDelete, ID: legal.ID})
+	if len(w.runtimeAuths) != 0 {
+		t.Fatal("delete semantics changed")
+	}
+}
+func TestKnownUsageCacheWatcherEntries(t *testing.T) {
+	dir := t.TempDir()
+	w := &Watcher{authDir: dir, lastAuthHashes: make(map[string]string)}
+	w.SetConfig(&config.Config{AuthDir: dir})
+	for _, name := range []string{".qoder-usage.json", ".workbuddy-usage.json"} {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte(`{"type":"custom"}`), 0600); err != nil {
+			t.Fatal(err)
+		}
+		w.handleEvent(fsnotify.Event{Name: path, Op: fsnotify.Write})
+		w.addOrUpdateClient(path)
+	}
+	if len(w.lastAuthHashes) != 0 || len(w.currentAuths) != 0 {
+		t.Fatal("cache read/hashed/registered")
+	}
+	if got := w.loadFileClients(&config.Config{AuthDir: dir}); got != 0 {
+		t.Fatalf("startup counted %d caches", got)
+	}
+}

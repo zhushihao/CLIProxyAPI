@@ -521,7 +521,7 @@ func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_KeepsReasoningBefo
 	if got := gjson.GetBytes(out, "messages.0.role").String(); got != "assistant" {
 		t.Fatalf("messages.0.role = %q, want assistant; output=%s", got, out)
 	}
-	if got := gjson.GetBytes(out, "messages.0.reasoning_content").String(); got != "[reasoning unavailable]" {
+	if got := gjson.GetBytes(out, "messages.0.reasoning_content").String(); got != " " {
 		t.Fatalf("messages.0.reasoning_content = %q, want placeholder; output=%s", got, out)
 	}
 	if got := gjson.GetBytes(out, "messages.1.role").String(); got != "user" {
@@ -595,7 +595,7 @@ func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_FallsBackToPlaceho
 	if len(messages) != 2 {
 		t.Fatalf("messages count = %d, want 2; output=%s", len(messages), out)
 	}
-	if got := messages[0].Get("reasoning_content").String(); got != "[reasoning unavailable]" {
+	if got := messages[0].Get("reasoning_content").String(); got != " " {
 		t.Fatalf("messages.0 reasoning_content = %q, want %q; output=%s", got, "[reasoning unavailable]", out)
 	}
 }
@@ -671,7 +671,7 @@ func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_ResetsReasoningAcr
 	if got := messages[0].Get("reasoning_content").String(); got != "turn 1 plan" {
 		t.Fatalf("messages.0 reasoning_content = %q, want %q; output=%s", got, "turn 1 plan", out)
 	}
-	if got := messages[3].Get("reasoning_content").String(); got != "[reasoning unavailable]" {
+	if got := messages[3].Get("reasoning_content").String(); got != " " {
 		t.Fatalf("messages.3 reasoning_content = %q, want %q; output=%s", got, "[reasoning unavailable]", out)
 	}
 }

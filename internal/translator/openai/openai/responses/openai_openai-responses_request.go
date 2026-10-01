@@ -27,6 +27,13 @@ import (
 //
 // Returns:
 //   - []byte: The transformed request data in OpenAI chat completions format
+// responsesReasoningFallbackText replaces the legacy "[reasoning unavailable]" placeholder
+// for history turns whose reasoning summary was lost. Qwen-family models parrot bracketed
+// tokens back as new thinking and clients store them verbatim (live 2026-09-30), so the
+// shim carries a single space " " (aligned with 523★ workbuddy2api-hub / OSS consensus:
+// upstream len>0 check passes without trimming, while leaving no semantic text for models to echo).
+const responsesReasoningFallbackText = " "
+
 func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inputRawJSON []byte, stream bool) []byte {
 	rawJSON := inputRawJSON
 	// Base OpenAI chat completions template with default values
@@ -154,7 +161,7 @@ func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 				return latestReasoningContent
 			}
 			if hasReasoningInSession {
-				return "[reasoning unavailable]"
+				return responsesReasoningFallbackText
 			}
 			return ""
 		}
@@ -692,9 +699,20 @@ func collectOpenAIResponsesReasoningContent(item gjson.Result) string {
 		})
 	}
 	if reasoningText.Len() == 0 {
-		return "[reasoning unavailable]"
+		return responsesReasoningFallbackText
 	}
 	return reasoningText.String()
+}
+
+// isResponsesReasoningFallbackText recognizes the legacy "[reasoning unavailable]",
+// the historical neutral sentence, and the single-space fallback, so stored poison
+// and fresh fallbacks both yield to real reasoning when histories are combined.
+func isResponsesReasoningFallbackText(s string) bool {
+	if s == " " {
+		return true
+	}
+	trimmed := strings.TrimSpace(s)
+	return trimmed == "" || trimmed == "[reasoning unavailable]" || trimmed == "Previous reasoning content was not retained; continuing the task."
 }
 
 func combineOpenAIResponsesReasoning(existing, incoming string) string {
@@ -706,9 +724,9 @@ func combineOpenAIResponsesReasoning(existing, incoming string) string {
 		return incoming
 	case incomingTrimmed == "":
 		return existing
-	case existingTrimmed == "[reasoning unavailable]":
+	case isResponsesReasoningFallbackText(existingTrimmed):
 		return incoming
-	case incomingTrimmed == "[reasoning unavailable]", existingTrimmed == incomingTrimmed:
+	case isResponsesReasoningFallbackText(incomingTrimmed), existingTrimmed == incomingTrimmed:
 		return existing
 	default:
 		return existing + "\n\n" + incoming
@@ -717,5 +735,5 @@ func combineOpenAIResponsesReasoning(existing, incoming string) string {
 
 func isUsableResponsesReasoning(reasoning string) bool {
 	trimmed := strings.TrimSpace(reasoning)
-	return trimmed != "" && trimmed != "[reasoning unavailable]"
+	return trimmed != "" && !isResponsesReasoningFallbackText(trimmed)
 }

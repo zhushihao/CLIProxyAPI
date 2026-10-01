@@ -1211,11 +1211,19 @@ func TestConvertOpenAIChatCompletionsResponseToOpenAIResponses_IncompleteToolStr
 				`data: [DONE]`,
 			},
 		},
+		{
+			name: "assistant delta only, zero output items before [DONE]",
+			chunks: []string{
+				`data: {"id":"resp_interrupted_empty","object":"chat.completion.chunk","created":1773896263,"model":"gpt-5.6-terra","choices":[{"index":0,"delta":{"role":"assistant","content":null},"finish_reason":null}]}`,
+				`data: [DONE]`,
+			},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var param any
+			failedSeen := false
 			for _, line := range tt.chunks {
 				for _, chunk := range ConvertOpenAIChatCompletionsResponseToOpenAIResponses(context.Background(), "gpt-5.6-terra", request, request, []byte(line), &param) {
 					event, data := parseOpenAIResponsesSSEEvent(t, chunk)
@@ -1228,8 +1236,20 @@ func TestConvertOpenAIChatCompletionsResponseToOpenAIResponses_IncompleteToolStr
 					if event == "response.function_call_arguments.done" {
 						t.Fatalf("incomplete tool stream emitted function_call_arguments.done: %s", chunk)
 					}
+					if event == "response.failed" {
+						failedSeen = true
+						if got := data.Get("response.status").String(); got != "failed" {
+							t.Fatalf("response.status = %q, want failed", got)
+						}
+						if data.Get("response.error.code").String() == "" {
+							t.Fatalf("response.failed event missing response.error.code: %s", chunk)
+						}
+					}
 					_ = data
 				}
+			}
+			if !failedSeen {
+				t.Fatalf("incomplete tool stream produced no response.failed terminal event; clients would hang waiting for a legal termination")
 			}
 		})
 	}

@@ -250,6 +250,22 @@ func buildResponsesCompletedEvent(st *oaiToResponsesState, requestRawJSON []byte
 	return emitRespEvent(eventType, completed)
 }
 
+func buildResponsesFailedEvent(st *oaiToResponsesState, requestRawJSON []byte, nextSeq func() int, errorCode, errorMessage string) []byte {
+	failed := []byte(`{"type":"response.failed","sequence_number":0,"response":{"id":"","object":"response","created_at":0,"status":"failed","error":{"type":"server_error","code":"","message":""}}}`)
+	failed, _ = sjson.SetBytes(failed, "sequence_number", nextSeq())
+	failed, _ = sjson.SetBytes(failed, "response.id", st.ResponseID)
+	failed, _ = sjson.SetBytes(failed, "response.created_at", st.Created)
+	failed, _ = sjson.SetBytes(failed, "response.error.code", errorCode)
+	failed, _ = sjson.SetBytes(failed, "response.error.message", errorMessage)
+	if requestRawJSON != nil {
+		req := gjson.ParseBytes(requestRawJSON)
+		if v := req.Get("model"); v.Exists() {
+			failed, _ = sjson.SetBytes(failed, "response.model", v.String())
+		}
+	}
+	return emitRespEvent("response.failed", failed)
+}
+
 // ConvertOpenAIChatCompletionsResponseToOpenAIResponses converts OpenAI Chat Completions streaming chunks
 // to OpenAI Responses SSE events (response.*).
 func ConvertOpenAIChatCompletionsResponseToOpenAIResponses(ctx context.Context, modelName string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, param *any) [][]byte {
@@ -636,9 +652,13 @@ func ConvertOpenAIChatCompletionsResponseToOpenAIResponses(ctx context.Context, 
 			}
 		}
 		if hasActiveUnfinishedTool {
+			st.CompletedEmitted = true
+			out = append(out, buildResponsesFailedEvent(st, requestForNamespace, nextSeq, "incomplete_tool_call", "upstream stream closed before tool calls completed"))
 			return out
 		}
 		if len(st.MsgItemAdded) == 0 && len(st.FuncItemAdded) == 0 {
+			st.CompletedEmitted = true
+			out = append(out, buildResponsesFailedEvent(st, requestForNamespace, nextSeq, "empty_response", "upstream stream finished without output items"))
 			return out
 		}
 		st.CompletedEmitted = true

@@ -400,3 +400,19 @@ func TestHostAuthSaveCallbackWritesPhysicalFile(t *testing.T) {
 		t.Fatalf("auths = %#v, want one registered auth", auths)
 	}
 }
+
+func TestKnownUsageCachePluginHost(t *testing.T) {
+	h := &Host{}
+	for _, name := range []string{".qoder-usage.json", ".workbuddy-usage.json"} {
+		if _, _, err := validateHostAuthSaveRequest(pluginapi.HostAuthSaveRequest{Name: name, JSON: []byte(`{"type":"custom"}`)}); err == nil {
+			t.Fatal("cache save accepted")
+		}
+		a := &coreauth.Auth{ID: "virtual", Attributes: map[string]string{"path": name}}
+		if h.buildHostAuthFileEntry(a) != nil {
+			t.Fatal("cache source listed")
+		}
+		if err := h.upsertAuthRecord(context.Background(), a); err == nil {
+			t.Fatal("cache registered")
+		}
+	}
+}

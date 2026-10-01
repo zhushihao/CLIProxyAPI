@@ -401,3 +401,30 @@ func (f fileStoreMultiAuthParserFunc) ParseAuth(context.Context, pluginapi.AuthP
 func (f fileStoreMultiAuthParserFunc) ParseAuths(ctx context.Context, req pluginapi.AuthParseRequest) ([]*cliproxyauth.Auth, bool, error) {
 	return f(ctx, req)
 }
+
+func TestKnownUsageCacheExcluded(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{".qoder-usage.json", ".workbuddy-usage.json", "unknown.json", ".hidden-account.json", "custom-usage.json"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(`{"type":"custom"}`), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s := NewFileTokenStore()
+	s.SetBaseDir(dir)
+	entries, err := s.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 3 {
+		t.Fatalf("got %d auths, want 3 legitimate accounts", len(entries))
+	}
+	for _, name := range []string{".qoder-usage.json", ".workbuddy-usage.json"} {
+		auths, err := s.readAuthFiles(filepath.Join(dir, name), dir)
+		if err != nil || len(auths) != 0 {
+			t.Fatalf("cache direct read: %v %d", err, len(auths))
+		}
+		if err := s.Delete(context.Background(), name); err == nil {
+			t.Fatal("cache deletion accepted")
+		}
+	}
+}

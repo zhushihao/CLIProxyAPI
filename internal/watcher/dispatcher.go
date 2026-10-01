@@ -41,6 +41,9 @@ func (w *Watcher) setAuthUpdateQueue(queue chan<- AuthUpdate) {
 }
 
 func (w *Watcher) dispatchRuntimeAuthUpdate(update AuthUpdate) bool {
+	if update.Action != AuthUpdateActionDelete && coreauth.IsKnownUsageCacheAuth(update.Auth) {
+		return false
+	}
 	if w == nil {
 		return false
 	}
@@ -89,7 +92,7 @@ func (w *Watcher) dispatchPersistedAuthUpdateWithRevision(update *AuthUpdate) (b
 	if w == nil || update == nil {
 		return false, 0
 	}
-	if update.Auth == nil || update.Auth.ID == "" {
+	if coreauth.IsKnownUsageCacheAuth(update.Auth) || update.Auth == nil || update.Auth.ID == "" {
 		return false, 0
 	}
 	path := ""
@@ -184,7 +187,7 @@ func (w *Watcher) prepareAuthUpdatesLocked(auths []*coreauth.Auth, force bool) [
 	newState := make(map[string]*coreauth.Auth, len(auths))
 	orderedIDs := make([]string, 0, len(auths))
 	for _, auth := range auths {
-		if auth == nil || auth.ID == "" {
+		if coreauth.IsKnownUsageCacheAuth(auth) || auth == nil || auth.ID == "" {
 			continue
 		}
 		if _, exists := newState[auth.ID]; !exists {

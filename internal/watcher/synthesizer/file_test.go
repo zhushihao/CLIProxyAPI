@@ -982,3 +982,13 @@ func TestFileSynthesizer_Synthesize_NoteParsing(t *testing.T) {
 		})
 	}
 }
+
+func TestKnownUsageCacheSynthesis(t *testing.T) {
+	ctx := &SynthesisContext{Config: &config.Config{}}
+	for _, name := range []string{".qoder-usage.json", ".workbuddy-usage.json"} {
+		auths, err := SynthesizeAuthFile(ctx, name, []byte(`{"type":"custom"}`))
+		if err != nil || len(auths) != 0 {
+			t.Fatalf("cache synthesized: %v %d", err, len(auths))
+		}
+	}
+}

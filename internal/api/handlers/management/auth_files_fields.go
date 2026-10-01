@@ -306,12 +306,12 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 
 	// Find auth by name or ID
 	var targetAuth *coreauth.Auth
-	if auth, ok := h.authManager.GetByID(name); ok {
+	if auth, ok := h.authManager.GetByID(name); ok && !coreauth.IsKnownUsageCacheAuth(auth) {
 		targetAuth = auth
 	} else {
 		auths := h.authManager.List()
 		for _, auth := range auths {
-			if auth.FileName == name {
+			if auth != nil && !coreauth.IsKnownUsageCacheAuth(auth) && auth.FileName == name {
 				targetAuth = auth
 				break
 			}

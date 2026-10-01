@@ -82,6 +82,14 @@ func (s *Server) setupRoutes() {
 		v1.GET("/live/:call_id", s.codexLiveHandler.HandleSideband)
 	}
 
+	// Anthropic / Claude Messages alias on root for clients whose baseURL includes /v1
+	rootAuth := s.engine.Group("/")
+	rootAuth.Use(AuthMiddleware(s.accessManager))
+	{
+		rootAuth.POST("/messages", claudeCodeHandlers.ClaudeMessages)
+		rootAuth.POST("/messages/count_tokens", claudeCodeHandlers.ClaudeCountTokens)
+	}
+
 	realtimeAuth := realtimeAuthMiddleware(s.accessManager, s.codexLiveHandler)
 	standardAuth := realtimeStandardAuthMiddleware(s.accessManager)
 	s.engine.GET("/v1/realtime", realtimeAuth, s.codexLiveHandler.HandleRealtimeWebsocket)

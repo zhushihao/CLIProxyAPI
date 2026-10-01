@@ -97,7 +97,7 @@ func (w *Watcher) reloadClients(rescanAuth bool, affectedOAuthProviders []string
 						continue
 					}
 					name := entry.Name()
-					if !strings.HasSuffix(strings.ToLower(name), ".json") {
+					if coreauth.IsKnownUsageCache(name) || !strings.HasSuffix(strings.ToLower(name), ".json") {
 						continue
 					}
 					fullPath := filepath.Join(resolvedAuthDir, name)
@@ -170,6 +170,9 @@ func (w *Watcher) addOrUpdateClient(path string) {
 }
 
 func (w *Watcher) addOrUpdateClientLocked(path string) {
+	if coreauth.IsKnownUsageCache(path) {
+		return
+	}
 	w.observeAuthFile(path)
 	data, errRead := os.ReadFile(path)
 	if errRead != nil {
@@ -373,7 +376,7 @@ func (w *Watcher) loadFileClients(cfg *config.Config) int {
 			continue
 		}
 		name := entry.Name()
-		if !strings.HasSuffix(strings.ToLower(name), ".json") {
+		if coreauth.IsKnownUsageCache(name) || !strings.HasSuffix(strings.ToLower(name), ".json") {
 			continue
 		}
 		authFileCount++

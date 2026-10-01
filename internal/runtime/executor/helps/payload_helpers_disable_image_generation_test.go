@@ -338,3 +338,54 @@ func TestApplyPayloadConfigWithRequest_PayloadConditionsSkipRule(t *testing.T) {
 		})
 	}
 }
+
+func TestApplyPayloadConfigWithRequest_KimiToSolEffort(t *testing.T) {
+	cfg := &config.Config{
+		Payload: config.PayloadConfig{
+			Override: []config.PayloadRule{
+				{
+					Models: []config.PayloadModelRule{
+						{
+							Name:     "kimi-k3-256k",
+							Protocol: "codex",
+							Match: []map[string]any{
+								{"reasoning.effort": "max"},
+							},
+						},
+						{
+							Name:     "kimi-k3-256k",
+							Protocol: "codex",
+							Match: []map[string]any{
+								{"reasoning.effort": "xhigh"},
+							},
+						},
+					},
+					Params: map[string]any{
+						"reasoning.effort": "high",
+					},
+				},
+			},
+		},
+	}
+
+	// 1. Failover case: baseModel is gpt-6.1-sol, requestedModel is kimi-k3-256k, protocol is codex
+	failoverPayload := []byte(`{"model":"gpt-6.1-sol","reasoning":{"effort":"max"}}`)
+	out := ApplyPayloadConfigWithRequest(cfg, "gpt-6.1-sol", "codex", "responses", "", failoverPayload, nil, "kimi-k3-256k", "", nil)
+	if got := gjson.GetBytes(out, "reasoning.effort").String(); got != "high" {
+		t.Fatalf("failover payload reasoning.effort = %q, want high; payload=%s", got, string(out))
+	}
+
+	// 2. Direct Kimi case: baseModel is kimi-k3-256k, requestedModel is kimi-k3-256k, protocol is kimi
+	kimiPayload := []byte(`{"model":"kimi-k3-256k","reasoning":{"effort":"max"}}`)
+	outKimi := ApplyPayloadConfigWithRequest(cfg, "kimi-k3-256k", "kimi", "responses", "", kimiPayload, nil, "kimi-k3-256k", "", nil)
+	if got := gjson.GetBytes(outKimi, "reasoning.effort").String(); got != "max" {
+		t.Fatalf("direct kimi reasoning.effort = %q, want max; payload=%s", got, string(outKimi))
+	}
+
+	// 3. Direct Sol case: baseModel is gpt-6.1-sol, requestedModel is gpt-6.1-sol, protocol is codex
+	solPayload := []byte(`{"model":"gpt-6.1-sol","reasoning":{"effort":"max"}}`)
+	outSol := ApplyPayloadConfigWithRequest(cfg, "gpt-6.1-sol", "codex", "responses", "", solPayload, nil, "gpt-6.1-sol", "", nil)
+	if got := gjson.GetBytes(outSol, "reasoning.effort").String(); got != "max" {
+		t.Fatalf("direct sol reasoning.effort = %q, want max (untouched); payload=%s", got, string(outSol))
+	}
+}

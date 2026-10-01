@@ -825,20 +825,22 @@ func (h *OpenAIResponsesAPIHandler) handleStreamingResponse(c *gin.Context, rawJ
 	}
 }
 
-// isCodexResponsesClientRequest limits the alternate terminal event to official Codex clients.
+// isCodexResponsesClientRequest recognizes clients that expect standard OpenAI Responses
+// terminal event (response.failed / response.completed) instead of the generic "error" SSE event.
 func isCodexResponsesClientRequest(c *gin.Context) bool {
 	if c == nil || c.Request == nil {
 		return false
 	}
-	if multiagentv2.IsCodexClientUserAgent(c.GetHeader("User-Agent")) {
+	ua := strings.ToLower(c.GetHeader("User-Agent"))
+	if multiagentv2.IsCodexClientUserAgent(c.GetHeader("User-Agent")) || strings.Contains(ua, "zcode") {
 		return true
 	}
 
 	switch originator := strings.ToLower(strings.TrimSpace(c.GetHeader("Originator"))); originator {
-	case "codex desktop", "codex-tui", "codex_cli_rs":
+	case "codex desktop", "codex-tui", "codex_cli_rs", "zcode":
 		return true
 	default:
-		return strings.HasPrefix(originator, "codex desktop/") || strings.HasPrefix(originator, "codex-tui/") || strings.HasPrefix(originator, "codex_cli_rs/")
+		return strings.HasPrefix(originator, "codex desktop/") || strings.HasPrefix(originator, "codex-tui/") || strings.HasPrefix(originator, "codex_cli_rs/") || strings.HasPrefix(originator, "zcode/")
 	}
 }
 

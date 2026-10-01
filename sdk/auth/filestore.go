@@ -76,6 +76,9 @@ func (s *FileTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (str
 	if auth == nil {
 		return "", fmt.Errorf("auth filestore: auth is nil")
 	}
+	if cliproxyauth.IsKnownUsageCacheAuth(auth) {
+		return "", fmt.Errorf("usage cache is not an auth file")
+	}
 	cliproxyauth.NormalizeCredentialMetadata(auth.Metadata)
 	if errWeight := cliproxyauth.ValidateAuthWeight(auth); errWeight != nil {
 		return "", fmt.Errorf("auth filestore: %w", errWeight)
@@ -84,6 +87,9 @@ func (s *FileTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (str
 	path, err := s.resolveAuthPath(auth)
 	if err != nil {
 		return "", err
+	}
+	if cliproxyauth.IsKnownUsageCache(path) {
+		return "", fmt.Errorf("usage cache is not an auth file")
 	}
 	if path == "" {
 		return "", fmt.Errorf("auth filestore: missing file path attribute for %s", auth.ID)
@@ -182,7 +188,7 @@ func (s *FileTokenStore) List(ctx context.Context) ([]*cliproxyauth.Auth, error)
 		if d.IsDir() {
 			return nil
 		}
-		if !strings.HasSuffix(strings.ToLower(d.Name()), ".json") {
+		if cliproxyauth.IsKnownUsageCache(d.Name()) || !strings.HasSuffix(strings.ToLower(d.Name()), ".json") {
 			return nil
 		}
 		auths, errReadAuths := s.readAuthFiles(path, dir)
@@ -210,6 +216,9 @@ func (s *FileTokenStore) Delete(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
+	if cliproxyauth.IsKnownUsageCache(path) {
+		return fmt.Errorf("usage cache is not an auth file")
+	}
 	if err = os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("auth filestore: delete failed: %w", err)
 	}
@@ -228,6 +237,9 @@ func (s *FileTokenStore) resolveDeletePath(id string) (string, error) {
 }
 
 func (s *FileTokenStore) readAuthFiles(path, baseDir string) ([]*cliproxyauth.Auth, error) {
+	if cliproxyauth.IsKnownUsageCache(path) {
+		return nil, nil
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read file: %w", err)
@@ -267,6 +279,9 @@ func (s *FileTokenStore) readAuthFiles(path, baseDir string) ([]*cliproxyauth.Au
 			disabled, _ := metadata["disabled"].(bool)
 			for index, auth := range auths {
 				if auth == nil {
+					continue
+				}
+				if cliproxyauth.IsKnownUsageCacheAuth(auth) {
 					continue
 				}
 				cliproxyauth.NormalizeCredentialMetadata(auth.Metadata)

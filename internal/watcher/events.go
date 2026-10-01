@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -65,6 +66,9 @@ func (w *Watcher) processEvents(ctx context.Context) {
 }
 
 func (w *Watcher) handleEvent(event fsnotify.Event) {
+	if coreauth.IsKnownUsageCache(event.Name) {
+		return
+	}
 	// Filter only relevant events: config file or auth-dir JSON files.
 	configOps := fsnotify.Write | fsnotify.Create | fsnotify.Rename
 	normalizedName := w.normalizeAuthPath(event.Name)
@@ -131,6 +135,9 @@ func (w *Watcher) handleEvent(event fsnotify.Event) {
 // observeAuthFile invalidates in-flight scans even if hash or content deduplication
 // suppresses an update. It must not invalidate an otherwise valid queued auth event.
 func (w *Watcher) observeAuthFile(path string) {
+	if coreauth.IsKnownUsageCache(path) {
+		return
+	}
 	normalized := w.normalizeAuthPath(path)
 	if normalized == "" {
 		return

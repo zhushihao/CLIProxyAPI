@@ -123,3 +123,19 @@ func TestAccountInfoUsesAuthKind(t *testing.T) {
 		t.Fatalf("oauth without email AccountInfo() = %q, %q", kind, value)
 	}
 }
+
+func TestKnownUsageCacheClassification(t *testing.T) {
+	for _, s := range []string{".qoder-usage.json", "dir/.workbuddy-usage.json", `C:\auth\.QODER-USAGE.JSON`, `C:/Auth/.WorkBuddy-Usage.Json`} {
+		if !IsKnownUsageCache(s) {
+			t.Fatalf("cache %s not recognized", s)
+		}
+	}
+	for _, s := range []string{"usage.json", "custom-usage.json", "workbuddy-usage.json", ".hidden.json", "qoder.json"} {
+		if IsKnownUsageCache(s) {
+			t.Fatalf("legitimate name %s excluded", s)
+		}
+	}
+	if IsKnownUsageCacheAuth(&Auth{ID: ".qoder-usage.json", Attributes: map[string]string{AttributeRuntimeOnly: "true"}}) {
+		t.Fatal("memory ID classified as path")
+	}
+}
