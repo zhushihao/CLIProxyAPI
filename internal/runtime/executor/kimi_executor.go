@@ -116,6 +116,9 @@ func (e *KimiExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 		return claudeResp, nil
 	}
 	if from == sdktranslator.FormatOpenAIResponse {
+		if e.cfg != nil && e.cfg.Kimi.ResponsesViaClaude {
+			return e.executeResponsesViaClaude(ctx, auth, req, opts)
+		}
 		return e.executeResponses(ctx, auth, req, opts)
 	}
 	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
@@ -252,6 +255,9 @@ func (e *KimiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 		return wrapKimiThinkingReplayStream(ctx, claudeResult, replayScope), nil
 	}
 	if from == sdktranslator.FormatOpenAIResponse {
+		if e.cfg != nil && e.cfg.Kimi.ResponsesViaClaude {
+			return e.executeResponsesStreamViaClaude(ctx, auth, req, opts)
+		}
 		return e.executeResponsesStream(ctx, auth, req, opts)
 	}
 	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
@@ -401,6 +407,74 @@ func (e *KimiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 		}
 	}()
 	return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil
+}
+
+// executeResponsesViaClaude serves openai-responses clients through Kimi's
+// anthropic-messages endpoint. Kimi's /v1/responses counts tool schemas far
+// stricter than /v1/messages and rejects large tool sets with a 262144 token
+// limit error while the messages endpoint accepts the identical content, so
+// failover traffic is routed down the proven claude path. ClaudeExecutor
+// performs the responses-to-claude translation itself (thinking and
+// output_config dialect included) and maps the reply back to responses.
+func (e *KimiExecutor) executeResponsesViaClaude(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
+	baseModel := thinking.ParseSuffix(req.Model).ModelName
+	upstreamModel := normalizeKimiUpstreamModel(baseModel)
+	payload := bytes.Clone(req.Payload)
+	var errSet error
+	payload, errSet = sjson.SetBytes(payload, "model", upstreamModel)
+	if errSet != nil {
+		return resp, fmt.Errorf("kimi executor: failed to set model: %w", errSet)
+	}
+	// Failover runs k3-256 at max thinking: bump the client's effort unless
+	// it explicitly asked for low.
+	if effort := gjson.GetBytes(payload, "reasoning.effort"); effort.Exists() && strings.ToLower(strings.TrimSpace(effort.String())) != "low" {
+		payload, errSet = sjson.SetBytes(payload, "reasoning.effort", "max")
+		if errSet != nil {
+			return resp, fmt.Errorf("kimi executor: failed to set failover effort: %w", errSet)
+		}
+	}
+	claudeReq := req
+	claudeReq.Payload = payload
+	applyKimiClaudeBaseURL(auth)
+	return e.ClaudeExecutor.Execute(ctx, auth, claudeReq, opts)
+}
+
+// executeResponsesStreamViaClaude is the streaming counterpart of
+// executeResponsesViaClaude.
+func (e *KimiExecutor) executeResponsesStreamViaClaude(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
+	if opts.Alt == "responses/compact" {
+		return nil, statusErr{code: http.StatusBadRequest, msg: "streaming not supported for /responses/compact"}
+	}
+	baseModel := thinking.ParseSuffix(req.Model).ModelName
+	upstreamModel := normalizeKimiUpstreamModel(baseModel)
+	payload := bytes.Clone(req.Payload)
+	var errSet error
+	payload, errSet = sjson.SetBytes(payload, "model", upstreamModel)
+	if errSet != nil {
+		return nil, fmt.Errorf("kimi executor: failed to set model: %w", errSet)
+	}
+	if effort := gjson.GetBytes(payload, "reasoning.effort"); effort.Exists() && strings.ToLower(strings.TrimSpace(effort.String())) != "low" {
+		payload, errSet = sjson.SetBytes(payload, "reasoning.effort", "max")
+		if errSet != nil {
+			return nil, fmt.Errorf("kimi executor: failed to set failover effort: %w", errSet)
+		}
+	}
+	claudeReq := req
+	claudeReq.Payload = payload
+	applyKimiClaudeBaseURL(auth)
+	return e.ClaudeExecutor.ExecuteStream(ctx, auth, claudeReq, opts)
+}
+
+// applyKimiClaudeBaseURL points the kimi auth at the anthropic-messages
+// endpoint, mirroring the source==claude branch.
+func applyKimiClaudeBaseURL(auth *cliproxyauth.Auth) {
+	if auth == nil {
+		return
+	}
+	if auth.Attributes == nil {
+		auth.Attributes = make(map[string]string)
+	}
+	auth.Attributes["base_url"] = helps.ResolveKimiClaudeBaseURL(auth)
 }
 
 func (e *KimiExecutor) executeResponses(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {

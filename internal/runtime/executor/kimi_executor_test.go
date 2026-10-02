@@ -1612,6 +1612,65 @@ func TestKimiExecutorExecuteResponses_InterleavedToolOutputsReordered(t *testing
 	}
 }
 
+func TestKimiExecutorResponsesViaClaudeFlag(t *testing.T) {
+	var upstreamURL string
+	var upstreamBody []byte
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", kimiRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		upstreamURL = req.URL.String()
+		upstreamBody, _ = io.ReadAll(req.Body)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+				`data: {"type":"message_start","message":{"id":"msg_1","model":"k3-256k","usage":{"input_tokens":10}}}`,
+				`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+				`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"OK"}}`,
+				`data: {"type":"content_block_stop","index":0}`,
+				`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5}}`,
+				`data: {"type":"message_stop"}`,
+				`data: [DONE]`,
+				"",
+			}, "\n"))),
+		}, nil
+	}))
+
+	executor := NewKimiExecutor(&config.Config{Kimi: config.KimiConfig{ResponsesViaClaude: true}})
+	auth := &cliproxyauth.Auth{
+		Attributes: map[string]string{},
+		Metadata:   map[string]any{"access_token": "test-token"},
+	}
+	payload := []byte(`{"model":"gpt-6.1-sol","stream":false,"max_output_tokens":4096,"reasoning":{"effort":"high"},"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"say OK"}]}]}`)
+
+	resp, errExecute := executor.Execute(ctx, auth, cliproxyexecutor.Request{
+		Model:   "kimi-k3-256k",
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FormatOpenAIResponse,
+	})
+	if errExecute != nil {
+		t.Fatalf("Execute() error = %v", errExecute)
+	}
+	if !strings.Contains(upstreamURL, "/v1/messages") {
+		t.Fatalf("upstream URL = %s, want /v1/messages", upstreamURL)
+	}
+	if got := gjson.GetBytes(upstreamBody, "output_config.effort").String(); got != "max" {
+		t.Fatalf("output_config.effort = %q, want max (failover runs max); body=%s", got, upstreamBody)
+	}
+	if gjson.GetBytes(upstreamBody, "reasoning").Exists() {
+		t.Fatalf("responses reasoning field leaked into claude body: %s", upstreamBody)
+	}
+	if gjson.GetBytes(upstreamBody, "model").String() != "k3-256k" {
+		t.Fatalf("upstream model = %s, want k3-256k", gjson.GetBytes(upstreamBody, "model").String())
+	}
+	if len(gjson.GetBytes(upstreamBody, "messages").Array()) == 0 {
+		t.Fatalf("claude body has no messages: %s", upstreamBody)
+	}
+	out := gjson.GetBytes(resp.Payload, "output")
+	if !out.Exists() || len(out.Array()) == 0 {
+		t.Fatalf("response not translated back to responses format: %s", resp.Payload)
+	}
+}
+
 func TestKimiExecutorExecuteResponsesStream_InterleavedToolOutputsReordered(t *testing.T) {
 	var upstreamBody []byte
 	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", kimiRoundTripperFunc(func(req *http.Request) (*http.Response, error) {

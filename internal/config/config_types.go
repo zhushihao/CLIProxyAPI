@@ -250,6 +250,16 @@ func (c *CodexConfig) StreamBootstrapTimeoutDuration() time.Duration {
 }
 
 // CodexLiveMediaRelayConfig configures the in-process Codex Live WebRTC gateway.
+// KimiConfig configures provider-wide Kimi request behavior.
+type KimiConfig struct {
+	// ResponsesViaClaude routes openai-responses traffic through Kimi's
+	// anthropic-messages endpoint instead of /v1/responses. Kimi's responses
+	// endpoint counts tool schemas far stricter than the messages endpoint
+	// and rejects large tool sets with a 262144 token limit error while the
+	// messages endpoint accepts the identical content.
+	ResponsesViaClaude bool `yaml:"responses-via-claude" json:"responses-via-claude"`
+}
+
 type CodexLiveMediaRelayConfig struct {
 	Enabled                 bool                 `yaml:"enabled" json:"enabled"`
 	MaxSessions             int                  `yaml:"max-sessions" json:"max-sessions"`
