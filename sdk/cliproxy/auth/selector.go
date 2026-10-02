@@ -701,7 +701,16 @@ func (s *WeightedRoundRobinSelector) Pick(ctx context.Context, provider, model s
 	state.prepare(weights)
 	picked := pickSmoothWeightedAuth(available, state.current)
 	if picked == nil {
-		return nil, &Error{Code: "auth_unavailable", Message: "no auth available with positive weight"}
+		return nil, &Error{Code: "auth_not_found", Message: "no auth available with positive weight"}
+	}
+	if log.IsLevelEnabled(log.DebugLevel) {
+		names := ""
+		for _, a := range available {
+			if a != nil {
+				names += fmt.Sprintf(" %s(w=%d,p=%s)", a.ID, weights[a.ID], a.Attributes["priority"])
+			}
+		}
+		log.Debugf("wrr pick: model=%s picked=%s candidates:%s", model, picked.ID, names)
 	}
 	return picked, nil
 }
