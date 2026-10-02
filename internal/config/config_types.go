@@ -214,10 +214,41 @@ type CodexConfig struct {
 	ModelLevelCooling bool `yaml:"model-level-cooling" json:"model-level-cooling"`
 	// LiveMediaRelay terminates and relays Codex Live WebRTC media in this process.
 	LiveMediaRelay CodexLiveMediaRelayConfig `yaml:"live-media-relay" json:"live-media-relay"`
-	// ResponseSteering enables full-duplex Codex WebSockets, bound to one
-	// upstream model/account/socket for their entire lifetime. Default is false.
-	ResponseSteering bool `yaml:"response-steering" json:"response-steering"`
-}
+		// ResponseSteering enables full-duplex Codex WebSockets, bound to one
+		// upstream model/account/socket for their entire lifetime. Default is false.
+		ResponseSteering bool `yaml:"response-steering" json:"response-steering"`
+		// OverloadRetry specifies the number of in-place retries on transient 502/503 or bootstrap overload errors.
+		// Defaults to 2 (up to 2 in-place retries with backoff on the same credential before failing over).
+		OverloadRetry *int `yaml:"overload-retry,omitempty" json:"overload-retry,omitempty"`
+		// OverloadRetryDelay specifies the initial delay between in-place overload retries.
+		// Defaults to "1s".
+		OverloadRetryDelay string `yaml:"overload-retry-delay,omitempty" json:"overload-retry-delay,omitempty"`
+	}
+
+	// OverloadRetryCount returns the number of in-place retries on transient overload errors.
+	// Defaults to 2.
+	func (c *CodexConfig) OverloadRetryCount() int {
+		if c == nil || c.OverloadRetry == nil {
+			return 2
+		}
+		if *c.OverloadRetry < 0 {
+			return 0
+		}
+		return *c.OverloadRetry
+	}
+
+	// OverloadRetryDelayDuration returns the base backoff delay between overload retries.
+	// Defaults to 1 second.
+	func (c *CodexConfig) OverloadRetryDelayDuration() time.Duration {
+		if c == nil || c.OverloadRetryDelay == "" {
+			return time.Second
+		}
+		d, err := time.ParseDuration(c.OverloadRetryDelay)
+		if err != nil || d <= 0 {
+			return time.Second
+		}
+		return d
+	}
 
 // DefaultCodexStreamBootstrapTimeout is the default maximum duration to buffer bootstrap events.
 // By default, it is 0 (unlimited time, relying purely on the 48-frame and 1MB byte bounds).

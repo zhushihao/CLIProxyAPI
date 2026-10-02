@@ -110,118 +110,139 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		AuthValue: authValue,
 	})
 
-	httpClient := helps.NewUtlsHTTPClient(ctx, e.cfg, auth, 0)
-	httpClient = reporter.TrackHTTPClientRoundTripOnly(httpClient)
-	httpResp, err := httpClient.Do(httpReq)
-	if err != nil {
-		helps.RecordAPIResponseError(ctx, e.cfg, err)
-		return nil, err
-	}
-	helps.RecordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
-	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
-		data, readErr := io.ReadAll(httpResp.Body)
-		if errClose := httpResp.Body.Close(); errClose != nil {
-			log.Errorf("codex executor: close response body error: %v", errClose)
+	maxOverloadRetries := e.overloadRetryCount()
+	baseRetryDelay := e.overloadRetryDelay()
+	var lastOverloadErr error
+
+	for attempt := 0; attempt <= maxOverloadRetries; attempt++ {
+		if attempt > 0 {
+			delay := baseRetryDelay * time.Duration(attempt)
+			helps.LogWithRequestID(ctx).Warnf("codex executor: in-place overload retry attempt %d/%d on auth %s after %v", attempt, maxOverloadRetries, authID, delay)
+			select {
+			case <-time.After(delay):
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
 		}
-		if readErr != nil {
-			helps.RecordAPIResponseError(ctx, e.cfg, readErr)
-			return nil, readErr
+
+		httpReq.Body = io.NopCloser(bytes.NewReader(upstreamBody))
+		httpClient := helps.NewUtlsHTTPClient(ctx, e.cfg, auth, 0)
+		httpClient = reporter.TrackHTTPClientRoundTripOnly(httpClient)
+		httpResp, err := httpClient.Do(httpReq)
+		if err != nil {
+			if attempt < maxOverloadRetries && ctx.Err() == nil {
+				helps.RecordAPIResponseError(ctx, e.cfg, err)
+				lastOverloadErr = err
+				continue
+			}
+			helps.RecordAPIResponseError(ctx, e.cfg, err)
+			return nil, err
 		}
-		if errClearReplay := clearCodexReasoningReplayOnInvalidSignature(ctx, replayScope, httpResp.StatusCode, data); errClearReplay != nil {
-			return nil, errClearReplay
+		helps.RecordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
+		if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
+			data, readErr := io.ReadAll(httpResp.Body)
+			if errClose := httpResp.Body.Close(); errClose != nil {
+				log.Errorf("codex executor: close response body error: %v", errClose)
+			}
+			if readErr != nil {
+				helps.RecordAPIResponseError(ctx, e.cfg, readErr)
+				return nil, readErr
+			}
+			isOverload := httpResp.StatusCode == http.StatusBadGateway || httpResp.StatusCode == http.StatusServiceUnavailable || isCodexOverloadBootstrapFailure(data)
+			if isOverload && attempt < maxOverloadRetries && ctx.Err() == nil {
+				helps.AppendAPIResponseChunk(ctx, e.cfg, data)
+				helps.LogWithRequestID(ctx).Warnf("codex executor: upstream returned HTTP %d overload on auth %s, retrying in-place", httpResp.StatusCode, authID)
+				lastOverloadErr = newCodexStatusErrWithCooling(httpResp.StatusCode, data, e.modelLevelCooling())
+				continue
+			}
+			if errClearReplay := clearCodexReasoningReplayOnInvalidSignature(ctx, replayScope, httpResp.StatusCode, data); errClearReplay != nil {
+				return nil, errClearReplay
+			}
+			helps.AppendAPIResponseChunk(ctx, e.cfg, data)
+			helps.LogWithRequestID(ctx).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), data))
+			err = newCodexStatusErrWithCooling(httpResp.StatusCode, data, e.modelLevelCooling())
+			return nil, err
 		}
-		helps.AppendAPIResponseChunk(ctx, e.cfg, data)
-		helps.LogWithRequestID(ctx).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), data))
-		err = newCodexStatusErrWithCooling(httpResp.StatusCode, data, e.modelLevelCooling())
-		return nil, err
-	}
 
-	buffering := e.cfg != nil && e.cfg.Codex.StreamBootstrapBuffering
-	var bootstrapTimeout time.Duration
-	var bootstrapStart time.Time
-	if buffering {
-		bootstrapTimeout = e.cfg.Codex.StreamBootstrapTimeoutDuration()
-		bootstrapStart = nowCodexBootstrap()
-	}
-
-	scanner := bufio.NewScanner(httpResp.Body)
-	scanner.Buffer(nil, 52_428_800) // 50MB
-	claudeInputTokens := helps.NewClaudeInputTokenState(from, to, responseFormat, originalPayload)
-	var param any
-	outputItemsByIndex := make(map[int64][]byte)
-	var outputItemsFallback [][]byte
-
-	var bufferedChunks [][]byte
-	// bufferedFrames counts the scanned lines this loop holds and bufferedBytes sums each line
-	// together with the chunks it translates into. Every iteration either holds the line or leaves
-	// the loop, so this is one unit per line read. Counting only the chunks would bound nothing for
-	// a downstream format that renders a frame as zero chunks, and counting only some line kinds
-	// would let the upstream's choice of framing decide whether the bound advances at all. The cost
-	// is that a verbose framing spends the budget faster: the three-line event:/data:/blank shape
-	// protects roughly a third as many events as a stream of bare ": keepalive" comments does.
-	//
-	// In addition to the frame and byte budgets, bootstrapTimeout bounds how long trickled
-	// frames may hold the downstream headers. A peer that never terminates a line is bounded
-	// by the caller's request context.
-	bufferedFrames := 0
-	bufferedBytes := 0
-	var initialChunks [][]byte
-	streamStarted := false
-	immediateTerminal := false
-	// bootstrapTerminalErr holds a non-overload terminal failure seen while buffering. It is
-	// delivered as an in-stream chunk after the buffered handshake so downstream behaviour stays
-	// identical to the unbuffered path instead of silently turning into a credential failover.
-	var bootstrapTerminalErr error
-
-	closeBootstrapBody := func() {
-		if errClose := httpResp.Body.Close(); errClose != nil {
-			log.Errorf("codex executor: close response body error: %v", errClose)
+		buffering := e.cfg != nil && e.cfg.Codex.StreamBootstrapBuffering
+		var bootstrapTimeout time.Duration
+		var bootstrapStart time.Time
+		if buffering {
+			bootstrapTimeout = e.cfg.Codex.StreamBootstrapTimeoutDuration()
+			bootstrapStart = nowCodexBootstrap()
 		}
-	}
 
-	sawOutputDelta := false
-	if buffering {
-		for scanner.Scan() {
-			line := scanner.Bytes()
-			helps.AppendAPIResponseChunk(ctx, e.cfg, line)
-			var translatedLine []byte
-			isHandshake := false
-			terminalSuccess := false
+		scanner := bufio.NewScanner(httpResp.Body)
+		scanner.Buffer(nil, 52_428_800) // 50MB
+		claudeInputTokens := helps.NewClaudeInputTokenState(from, to, responseFormat, originalPayload)
+		var param any
+		outputItemsByIndex := make(map[int64][]byte)
+		var outputItemsFallback [][]byte
 
-			if transformed, ok := grokbuild.TransformKeepaliveSSELine(line, isGrokClient); ok {
-				translatedLine = transformed
-				isHandshake = true
-			} else if bytes.HasPrefix(line, dataTag) {
-				data := bytes.TrimSpace(line[5:])
-				data = helps.RestoreCodexMultiAgentV2Response(data, optimizeMultiAgentV2)
-				observeCodexTokenEvent(reporter, data)
-				translatedLine = append([]byte("data: "), data...)
-				eventType := gjson.GetBytes(data, "type").String()
-				if streamErr, terminalBody, ok := codexTerminalFailureErrWithCooling(data, e.modelLevelCooling()); ok {
-					closeBootstrapBody()
-					if errClearReplay := clearCodexReasoningReplayOnInvalidSignature(ctx, replayScope, streamErr.StatusCode(), terminalBody); errClearReplay != nil {
-						helps.RecordAPIResponseError(ctx, e.cfg, errClearReplay)
-						reporter.PublishFailure(ctx, errClearReplay)
-						return nil, errClearReplay
-					}
-					helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
-					reporter.PublishFailure(ctx, streamErr)
-					if isCodexOverloadBootstrapFailure(terminalBody) {
-						timeSinceStart := nowCodexBootstrap().Sub(bootstrapStart)
-						timeoutReached := bootstrapTimeout > 0 && timeSinceStart >= bootstrapTimeout
-						if !timeoutReached {
-							// Transient capacity rejection smuggled into an HTTP 200 stream. Fail the
-							// attempt before the downstream headers are committed so the conductor can
-							// transparently retry on another credential, and report the status the
-							// upstream refused to put on the wire.
-							helps.LogWithRequestID(ctx).Debugf("codex executor: bootstrap overload rejection after %d buffered lines, failing over", bufferedFrames)
-							return nil, newCodexBootstrapOverloadErr(terminalBody)
+		var bufferedChunks [][]byte
+		bufferedFrames := 0
+		bufferedBytes := 0
+		var initialChunks [][]byte
+		streamStarted := false
+		immediateTerminal := false
+		var bootstrapTerminalErr error
+		retryBootstrapOverload := false
+
+		closeBootstrapBody := func() {
+			if errClose := httpResp.Body.Close(); errClose != nil {
+				log.Errorf("codex executor: close response body error: %v", errClose)
+			}
+		}
+
+		sawOutputDelta := false
+		if buffering {
+			for scanner.Scan() {
+				line := scanner.Bytes()
+				helps.AppendAPIResponseChunk(ctx, e.cfg, line)
+				var translatedLine []byte
+				isHandshake := false
+				terminalSuccess := false
+
+				if transformed, ok := grokbuild.TransformKeepaliveSSELine(line, isGrokClient); ok {
+					translatedLine = transformed
+					isHandshake = true
+				} else if bytes.HasPrefix(line, dataTag) {
+					data := bytes.TrimSpace(line[5:])
+					data = helps.RestoreCodexMultiAgentV2Response(data, optimizeMultiAgentV2)
+					observeCodexTokenEvent(reporter, data)
+					translatedLine = append([]byte("data: "), data...)
+					eventType := gjson.GetBytes(data, "type").String()
+					if streamErr, terminalBody, ok := codexTerminalFailureErrWithCooling(data, e.modelLevelCooling()); ok {
+						closeBootstrapBody()
+						if errClearReplay := clearCodexReasoningReplayOnInvalidSignature(ctx, replayScope, streamErr.StatusCode(), terminalBody); errClearReplay != nil {
+							helps.RecordAPIResponseError(ctx, e.cfg, errClearReplay)
+							reporter.PublishFailure(ctx, errClearReplay)
+							return nil, errClearReplay
 						}
-						helps.LogWithRequestID(ctx).Debugf("codex executor: bootstrap overload rejection after %d lines / %v, time budget exhausted; delivering in-stream", bufferedFrames, timeSinceStart)
+						helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
+						reporter.PublishFailure(ctx, streamErr)
+						if isCodexOverloadBootstrapFailure(terminalBody) {
+							timeSinceStart := nowCodexBootstrap().Sub(bootstrapStart)
+							timeoutReached := bootstrapTimeout > 0 && timeSinceStart >= bootstrapTimeout
+							if !timeoutReached {
+								if attempt < maxOverloadRetries && ctx.Err() == nil {
+									helps.LogWithRequestID(ctx).Warnf("codex executor: bootstrap overload rejection after %d buffered lines on auth %s, retrying in-place", bufferedFrames, authID)
+									lastOverloadErr = newCodexBootstrapOverloadErr(terminalBody)
+									retryBootstrapOverload = true
+									break
+								}
+								// Transient capacity rejection smuggled into an HTTP 200 stream. Fail the
+								// attempt before the downstream headers are committed so the conductor can
+								// transparently retry on another credential, and report the status the
+								// upstream refused to put on the wire.
+								helps.LogWithRequestID(ctx).Debugf("codex executor: bootstrap overload rejection after %d buffered lines, failing over", bufferedFrames)
+								return nil, newCodexBootstrapOverloadErr(terminalBody)
+							}
+							helps.LogWithRequestID(ctx).Debugf("codex executor: bootstrap overload rejection after %d lines / %v, time budget exhausted; delivering in-stream", bufferedFrames, timeSinceStart)
+						}
+						bootstrapTerminalErr = streamErr
+						break
 					}
-					bootstrapTerminalErr = streamErr
-					break
-				}
 				if helps.HasMeaningfulCodexOutputDelta(data) {
 					sawOutputDelta = true
 				}
@@ -293,15 +314,19 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 				helps.LogWithRequestID(ctx).Debugf("codex executor: bootstrap %s exhausted after %d lines / %d bytes / %v, releasing stream without overload probing", exhausted, bufferedFrames, bufferedBytes, timeSinceStart)
 			}
 
-			initialChunks = chunks
-			streamStarted = true
-			if terminalSuccess {
-				immediateTerminal = true
+				initialChunks = chunks
+				streamStarted = true
+				if terminalSuccess {
+					immediateTerminal = true
+				}
+				break
 			}
-			break
-		}
 
-		if !streamStarted && bootstrapTerminalErr == nil {
+			if retryBootstrapOverload {
+				continue
+			}
+
+			if !streamStarted && bootstrapTerminalErr == nil {
 			closeBootstrapBody()
 			if errScan := scanner.Err(); errScan != nil {
 				// A cancelled downstream request must not be recorded as an upstream failure or
@@ -472,10 +497,16 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		streamErr := newCodexIncompleteStreamError()
 		helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
 		reporter.PublishFailure(ctx, streamErr)
-		select {
-		case out <- cliproxyexecutor.StreamChunk{Err: streamErr}:
-		case <-ctx.Done():
-		}
-	}()
-	return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil
+			select {
+			case out <- cliproxyexecutor.StreamChunk{Err: streamErr}:
+			case <-ctx.Done():
+			}
+		}()
+		return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil
+	}
+
+	if lastOverloadErr != nil {
+		return nil, lastOverloadErr
+	}
+	return nil, statusErr{code: http.StatusBadGateway, msg: "codex upstream overload retries exhausted"}
 }
