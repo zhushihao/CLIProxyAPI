@@ -428,7 +428,7 @@ func (e *KimiExecutor) executeResponsesViaClaude(ctx context.Context, auth *clip
 	claudeReq := req
 	claudeReq.Payload = payload
 	applyKimiClaudeBaseURL(auth)
-	return e.ClaudeExecutor.Execute(ctx, auth, claudeReq, opts)
+	return e.ClaudeExecutor.Execute(helps.WithUsageIdentityOverride(ctx, e.Identifier(), "KimiExecutor"), auth, claudeReq, opts)
 }
 
 // executeResponsesStreamViaClaude is the streaming counterpart of
@@ -448,7 +448,7 @@ func (e *KimiExecutor) executeResponsesStreamViaClaude(ctx context.Context, auth
 	claudeReq := req
 	claudeReq.Payload = payload
 	applyKimiClaudeBaseURL(auth)
-	return e.ClaudeExecutor.ExecuteStream(ctx, auth, claudeReq, opts)
+	return e.ClaudeExecutor.ExecuteStream(helps.WithUsageIdentityOverride(ctx, e.Identifier(), "KimiExecutor"), auth, claudeReq, opts)
 }
 
 // applyKimiClaudeBaseURL points the kimi auth at the anthropic-messages

@@ -72,13 +72,50 @@ type usageExecutor interface {
 	Identifier() string
 }
 
+// usageIdentityOverride lets a delegating executor re-label usage recorded by
+// the executor it hands work to. The Kimi responses-via-claude path delegates
+// to ClaudeExecutor, which would otherwise book Kimi traffic under provider
+// "claude" / executor "ClaudeExecutor" and hide it from provider-level views.
+type usageIdentityOverride struct {
+	provider     string
+	executorType string
+}
+
+type usageIdentityOverrideKey struct{}
+
+// WithUsageIdentityOverride returns a ctx that re-labels the usage identity
+// for the executor call it is passed into.
+func WithUsageIdentityOverride(ctx context.Context, provider, executorType string) context.Context {
+	return context.WithValue(ctx, usageIdentityOverrideKey{}, &usageIdentityOverride{
+		provider:     provider,
+		executorType: executorType,
+	})
+}
+
+func usageIdentityOverrideFromContext(ctx context.Context) *usageIdentityOverride {
+	if ctx == nil {
+		return nil
+	}
+	override, _ := ctx.Value(usageIdentityOverrideKey{}).(*usageIdentityOverride)
+	return override
+}
+
 func NewExecutorUsageReporter(ctx context.Context, executor usageExecutor, model string, auth *cliproxyauth.Auth) *UsageReporter {
 	provider := ""
 	if executor != nil {
 		provider = executor.Identifier()
 	}
+	executorType := ExecutorTypeName(executor)
+	if override := usageIdentityOverrideFromContext(ctx); override != nil {
+		if override.provider != "" {
+			provider = override.provider
+		}
+		if override.executorType != "" {
+			executorType = override.executorType
+		}
+	}
 	reporter := NewUsageReporter(ctx, provider, model, auth)
-	reporter.executorType = ExecutorTypeName(executor)
+	reporter.executorType = executorType
 	return reporter
 }
 
