@@ -26,11 +26,22 @@ func DerivedSessionUUID(provider string, metadataSets ...map[string]any) string 
 	return stableProviderSessionUUID(provider, "derived-session", DerivedSessionID(metadataSets...))
 }
 
-// ProviderSessionUUID prefers a long-lived execution session and falls back to the derived identity.
+// ProviderSessionUUID prefers a long-lived execution session, then the canonical
+// client session, then the derived identity. The canonical tier matters for
+// explicit-session HTTP clients (session id carried in a header that is not on
+// the upstream passthrough allowlist): Enrich strips the derived id from their
+// metadata and leaves only canonical_session_id, so without this tier the
+// upstream cache key would come out empty and upstream cache routing would
+// roulette across shards under parallel load.
 func ProviderSessionUUID(provider string, metadataSets ...map[string]any) string {
 	for _, metadata := range metadataSets {
 		if executionID := metadataString(metadata, cliproxyexecutor.ExecutionSessionMetadataKey); executionID != "" {
 			return stableProviderSessionUUID(provider, "execution-session", executionID)
+		}
+	}
+	for _, metadata := range metadataSets {
+		if canonicalID := metadataString(metadata, cliproxyexecutor.CanonicalSessionIDMetadataKey); canonicalID != "" {
+			return stableProviderSessionUUID(provider, "canonical-session", canonicalID)
 		}
 	}
 	return DerivedSessionUUID(provider, metadataSets...)
