@@ -1653,8 +1653,8 @@ func TestKimiExecutorResponsesViaClaudeFlag(t *testing.T) {
 	if !strings.Contains(upstreamURL, "/v1/messages") {
 		t.Fatalf("upstream URL = %s, want /v1/messages", upstreamURL)
 	}
-	if got := gjson.GetBytes(upstreamBody, "output_config.effort").String(); got != "max" {
-		t.Fatalf("output_config.effort = %q, want max (failover runs max); body=%s", got, upstreamBody)
+	if got := gjson.GetBytes(upstreamBody, "output_config.effort").String(); got != "high" {
+		t.Fatalf("output_config.effort = %q, want high (client effort passes through unchanged); body=%s", got, upstreamBody)
 	}
 	if gjson.GetBytes(upstreamBody, "reasoning").Exists() {
 		t.Fatalf("responses reasoning field leaked into claude body: %s", upstreamBody)

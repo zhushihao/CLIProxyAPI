@@ -425,14 +425,6 @@ func (e *KimiExecutor) executeResponsesViaClaude(ctx context.Context, auth *clip
 	if errSet != nil {
 		return resp, fmt.Errorf("kimi executor: failed to set model: %w", errSet)
 	}
-	// Failover runs k3-256 at max thinking: bump the client's effort unless
-	// it explicitly asked for low.
-	if effort := gjson.GetBytes(payload, "reasoning.effort"); effort.Exists() && strings.ToLower(strings.TrimSpace(effort.String())) != "low" {
-		payload, errSet = sjson.SetBytes(payload, "reasoning.effort", "max")
-		if errSet != nil {
-			return resp, fmt.Errorf("kimi executor: failed to set failover effort: %w", errSet)
-		}
-	}
 	claudeReq := req
 	claudeReq.Payload = payload
 	applyKimiClaudeBaseURL(auth)
@@ -452,12 +444,6 @@ func (e *KimiExecutor) executeResponsesStreamViaClaude(ctx context.Context, auth
 	payload, errSet = sjson.SetBytes(payload, "model", upstreamModel)
 	if errSet != nil {
 		return nil, fmt.Errorf("kimi executor: failed to set model: %w", errSet)
-	}
-	if effort := gjson.GetBytes(payload, "reasoning.effort"); effort.Exists() && strings.ToLower(strings.TrimSpace(effort.String())) != "low" {
-		payload, errSet = sjson.SetBytes(payload, "reasoning.effort", "max")
-		if errSet != nil {
-			return nil, fmt.Errorf("kimi executor: failed to set failover effort: %w", errSet)
-		}
 	}
 	claudeReq := req
 	claudeReq.Payload = payload
