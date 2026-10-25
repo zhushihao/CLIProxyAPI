@@ -3,9 +3,11 @@ package helps
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"math/big"
 	"net/http"
+	"strconv"
 	"strings"
 
 	log "github.com/sirupsen/logrus"
@@ -21,6 +23,15 @@ const (
 	// required before considering a pure constant union eligible for semantic enum normalization.
 	codexComplexUnionBranchThreshold = 8
 )
+
+// codexNumericBoundKeywords lists the JSON Schema numeric bound keywords that
+// the Codex backend rejects with HTTP 500 when set to an integer outside int64.
+var codexNumericBoundKeywords = [...]string{
+	"minimum",
+	"maximum",
+	"exclusiveMinimum",
+	"exclusiveMaximum",
+}
 
 // IsCodexUserAgent reports whether headers contain a User-Agent indicating a Codex client.
 func IsCodexUserAgent(headers http.Header) bool {
@@ -108,16 +119,34 @@ func normalizeCodexTool(tool gjson.Result) ([]byte, bool) {
 
 	rawTool := []byte(tool.Raw)
 	updatedParams, paramsChanged := normalizeCodexParameters(params)
-	if !paramsChanged {
+
+	// Codex 后端对缺省 strict 的 function 工具默认按 strict:true 规范化 schema：
+	// optional 字段全部扩进 required，迫使模型为可选参数编造值，客户端校验失败
+	// 后进入重试循环（2026-10-26 实测：required ["name","script"] 被扩成四项）。
+	// 显式 strict:false 会被上游尊重并保留 optional 语义（四模型实测通过），
+	// 故对未声明 strict 的 function 工具补显式 false。仅覆盖缺省：显式声明不动。
+	strictChanged := false
+	if toolType == "function" && !tool.Get("strict").Exists() {
+		if updated, err := sjson.SetBytes(rawTool, "strict", false); err == nil {
+			rawTool = updated
+			strictChanged = true
+		}
+	}
+
+	if !paramsChanged && !strictChanged {
 		return nil, false
 	}
 
-	updatedTool, errSet := sjson.SetRawBytes(rawTool, "parameters", updatedParams)
-	if errSet != nil {
-		return nil, false
+	updatedTool := rawTool
+	if paramsChanged {
+		var errSet error
+		updatedTool, errSet = sjson.SetRawBytes(rawTool, "parameters", updatedParams)
+		if errSet != nil {
+			return nil, false
+		}
 	}
 
-	log.Debugf("codex: normalized schema for tool %s to avoid upstream abort", tool.Get("name").String())
+	log.Debugf("codex: normalized tool %s (strict default + schema) to avoid upstream abort", tool.Get("name").String())
 	return updatedTool, true
 }
 
@@ -151,16 +180,18 @@ func normalizeCodexParameters(params gjson.Result) ([]byte, bool) {
 
 // stripIncompatiblePatternsFromJSON recursively removes pattern attributes that strict
 // upstream validators reject: unsupported Unicode property escapes (\p{...} / \P{...})
-// and the octal NUL escape (\0). See util.HasUnsupportedUnicodePropertyEscape for the
-// predicate and the upstream errors behind each one.
+// and the octal NUL escape (\0), as well as integer numeric bounds (minimum, maximum,
+// exclusiveMinimum, exclusiveMaximum) outside the signed 64-bit integer range (#6579).
+// See util.HasUnsupportedUnicodePropertyEscape for the regex predicate and upstream errors.
 // It is schema-aware: only subschemas under known JSON Schema keyword locations are visited,
-// preventing accidental deletion of 'pattern' keys inside user data (e.g. description, default, enum).
+// preventing accidental deletion of keys inside user data (e.g. description, default, enum).
 func stripIncompatiblePatternsFromJSON(raw []byte) ([]byte, bool) {
 	rawStr := string(raw)
-	// The fast path avoids parsing when no candidate escape is present. Patterns
-	// arrive JSON-escaped, so a literal backslash before '0' is `\\0` in the raw bytes.
+	// The fast path avoids parsing when no candidate escape or numeric bound is present.
+	// Patterns arrive JSON-escaped, so a literal backslash before '0' is `\\0` in the raw bytes.
+	// "inimum" and "aximum" match minimum, maximum, exclusiveMinimum, and exclusiveMaximum.
 	if !strings.Contains(rawStr, `\p{`) && !strings.Contains(rawStr, `\P{`) && !strings.Contains(rawStr, `\u`) &&
-		!strings.Contains(rawStr, `\\0`) {
+		!strings.Contains(rawStr, `\\0`) && !strings.Contains(rawStr, "inimum") && !strings.Contains(rawStr, "aximum") {
 		return raw, false
 	}
 	var root any
@@ -186,6 +217,92 @@ func stripIncompatiblePatternsFromJSON(raw []byte) ([]byte, bool) {
 	return bytes.TrimSpace(buf.Bytes()), true
 }
 
+func isNumericBoundOutOfInt64(number json.Number) bool {
+	raw := strings.TrimSpace(number.String())
+	if raw == "" {
+		return false
+	}
+	if !strings.ContainsAny(raw, ".eE") {
+		_, errParse := strconv.ParseInt(raw, 10, 64)
+		return errors.Is(errParse, strconv.ErrRange)
+	}
+
+	s := raw
+	negative := false
+	if strings.HasPrefix(s, "-") {
+		negative = true
+		s = s[1:]
+	} else if strings.HasPrefix(s, "+") {
+		s = s[1:]
+	}
+
+	mantissa := s
+	var exp int64
+	if idx := strings.IndexAny(s, "eE"); idx >= 0 {
+		mantissa = s[:idx]
+		expStr := s[idx+1:]
+		parsedExp, errExp := strconv.ParseInt(expStr, 10, 64)
+		if errExp != nil {
+			if errors.Is(errExp, strconv.ErrRange) {
+				return !strings.HasPrefix(expStr, "-") && strings.Trim(mantissa, "0.") != ""
+			}
+			return false
+		}
+		exp = parsedExp
+	}
+
+	intPart := mantissa
+	fracPart := ""
+	if dotIdx := strings.IndexByte(mantissa, '.'); dotIdx >= 0 {
+		intPart = mantissa[:dotIdx]
+		fracPart = mantissa[dotIdx+1:]
+		if strings.IndexByte(fracPart, '.') >= 0 {
+			return false
+		}
+	}
+	if intPart == "" && fracPart == "" {
+		return false
+	}
+	for i := 0; i < len(intPart); i++ {
+		if intPart[i] < '0' || intPart[i] > '9' {
+			return false
+		}
+	}
+	for i := 0; i < len(fracPart); i++ {
+		if fracPart[i] < '0' || fracPart[i] > '9' {
+			return false
+		}
+	}
+
+	allDigits := intPart + fracPart
+	sig := strings.TrimLeft(allDigits, "0")
+	if sig == "" {
+		return false
+	}
+	if exp < -int64(len(raw)) {
+		return false
+	}
+	if exp > int64(len(raw))+20 {
+		return true
+	}
+	trimmed := strings.TrimRight(sig, "0")
+	trailingZeros := int64(len(sig) - len(trimmed))
+	effectiveExp := exp - int64(len(fracPart)) + trailingZeros
+	if effectiveExp < 0 {
+		return false
+	}
+	if effectiveExp > 19 || int64(len(trimmed))+effectiveExp > 19 {
+		return true
+	}
+
+	intStr := trimmed + strings.Repeat("0", int(effectiveExp))
+	if negative {
+		intStr = "-" + intStr
+	}
+	_, errParse := strconv.ParseInt(intStr, 10, 64)
+	return errors.Is(errParse, strconv.ErrRange)
+}
+
 func stripIncompatiblePatterns(v any) bool {
 	changed := false
 	switch schema := v.(type) {
@@ -193,6 +310,12 @@ func stripIncompatiblePatterns(v any) bool {
 		if patternVal, ok := schema["pattern"].(string); ok && util.HasUnsupportedUnicodePropertyEscape(patternVal) {
 			delete(schema, "pattern")
 			changed = true
+		}
+		for _, boundKey := range codexNumericBoundKeywords {
+			if boundVal, ok := schema[boundKey].(json.Number); ok && isNumericBoundOutOfInt64(boundVal) {
+				delete(schema, boundKey)
+				changed = true
+			}
 		}
 
 		// Inspect regex keys under patternProperties

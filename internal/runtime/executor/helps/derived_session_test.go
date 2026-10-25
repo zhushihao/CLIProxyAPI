@@ -57,6 +57,45 @@ func TestProviderSessionUUIDPrefersExecutionSession(t *testing.T) {
 	}
 }
 
+func TestProviderSessionUUIDPrefersCanonicalSession(t *testing.T) {
+	t.Parallel()
+
+	canonical := map[string]any{
+		cliproxyexecutor.CanonicalSessionIDMetadataKey: "header:dsess-alpha-1111",
+	}
+	firstID := ProviderSessionUUID("codex", canonical)
+	if firstID == "" {
+		t.Fatalf("canonical session produced no provider UUID")
+	}
+	if _, errParse := uuid.Parse(firstID); errParse != nil {
+		t.Fatalf("canonical mapping %q is not a UUID: %v", firstID, errParse)
+	}
+	if repeated := ProviderSessionUUID("codex", canonical); repeated != firstID {
+		t.Fatalf("canonical mapping is not stable: first=%q repeated=%q", firstID, repeated)
+	}
+	if other := ProviderSessionUUID("codex", map[string]any{
+		cliproxyexecutor.CanonicalSessionIDMetadataKey: "header:dsess-beta-2222",
+	}); other == firstID {
+		t.Fatalf("distinct canonical sessions collapsed to one UUID: %q", firstID)
+	}
+	// Explicit-session clients carry canonical only (Enrich strips derived);
+	// the mapping must not fall through to an empty derived id.
+	if got := ProviderSessionUUID("codex", map[string]any{
+		cliproxyexecutor.CanonicalSessionIDMetadataKey: "header:dsess-alpha-1111",
+		cliproxyexecutor.DerivedSessionIDMetadataKey:   "",
+	}); got != firstID {
+		t.Fatalf("empty derived id changed the mapping: got=%q want=%q", got, firstID)
+	}
+	// Execution session still wins over canonical.
+	execution := ProviderSessionUUID("codex", map[string]any{
+		cliproxyexecutor.ExecutionSessionMetadataKey:   "connection-1",
+		cliproxyexecutor.CanonicalSessionIDMetadataKey: "header:dsess-alpha-1111",
+	})
+	if execution == firstID {
+		t.Fatalf("provider UUID did not prefer execution session over canonical: %q", execution)
+	}
+}
+
 func TestDerivedSessionProviderMappingsRequireIdentity(t *testing.T) {
 	t.Parallel()
 
