@@ -2,26 +2,6 @@ package auth
 
 import "strings"
 
-// IsKnownUsageCache excludes only the two reserved plugin ledger basenames.
-func IsKnownUsageCache(path string) bool {
-	if i := strings.LastIndexAny(path, `/\`); i >= 0 {
-		path = path[i+1:]
-	}
-	return strings.EqualFold(path, ".qoder-usage.json") || strings.EqualFold(path, ".workbuddy-usage.json")
-}
-
-// IsKnownUsageCacheAuth checks physical source metadata, never provider names.
-func IsKnownUsageCacheAuth(a *Auth) bool {
-	if a == nil {
-		return false
-	}
-	if IsKnownUsageCache(a.FileName) || IsKnownUsageCache(authAttribute(a, AttributePath)) {
-		return true
-	}
-	source := authAttribute(a, AttributeSource)
-	return source != "" && !strings.HasPrefix(source, "config:") && IsKnownUsageCache(source)
-}
-
 const (
 	AuthKindAPIKey = "apikey"
 	AuthKindOAuth  = "oauth"
@@ -50,6 +30,9 @@ const (
 func (a *Auth) AuthKind() string {
 	if a == nil {
 		return ""
+	}
+	if IsCodexUseSIWC(a) {
+		return AuthKindOAuth
 	}
 	if kind := normalizeAuthKind(authAttribute(a, AttributeAuthKind)); kind != "" {
 		return kind
@@ -137,6 +120,12 @@ func authHasOAuthMetadata(auth *Auth) bool {
 		}
 	}
 	if token, ok := auth.Metadata["token"].(map[string]any); ok && len(token) > 0 {
+		return true
+	}
+	if siwc, ok := auth.Metadata["siwc"].(map[string]any); ok && len(siwc) > 0 {
+		return true
+	}
+	if sa, ok := auth.Metadata["service_account"].(map[string]any); ok && len(sa) > 0 {
 		return true
 	}
 	return false

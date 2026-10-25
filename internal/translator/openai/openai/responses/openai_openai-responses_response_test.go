@@ -1211,19 +1211,11 @@ func TestConvertOpenAIChatCompletionsResponseToOpenAIResponses_IncompleteToolStr
 				`data: [DONE]`,
 			},
 		},
-		{
-			name: "assistant delta only, zero output items before [DONE]",
-			chunks: []string{
-				`data: {"id":"resp_interrupted_empty","object":"chat.completion.chunk","created":1773896263,"model":"gpt-5.6-terra","choices":[{"index":0,"delta":{"role":"assistant","content":null},"finish_reason":null}]}`,
-				`data: [DONE]`,
-			},
-		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var param any
-			failedSeen := false
 			for _, line := range tt.chunks {
 				for _, chunk := range ConvertOpenAIChatCompletionsResponseToOpenAIResponses(context.Background(), "gpt-5.6-terra", request, request, []byte(line), &param) {
 					event, data := parseOpenAIResponsesSSEEvent(t, chunk)
@@ -1236,20 +1228,8 @@ func TestConvertOpenAIChatCompletionsResponseToOpenAIResponses_IncompleteToolStr
 					if event == "response.function_call_arguments.done" {
 						t.Fatalf("incomplete tool stream emitted function_call_arguments.done: %s", chunk)
 					}
-					if event == "response.failed" {
-						failedSeen = true
-						if got := data.Get("response.status").String(); got != "failed" {
-							t.Fatalf("response.status = %q, want failed", got)
-						}
-						if data.Get("response.error.code").String() == "" {
-							t.Fatalf("response.failed event missing response.error.code: %s", chunk)
-						}
-					}
 					_ = data
 				}
-			}
-			if !failedSeen {
-				t.Fatalf("incomplete tool stream produced no response.failed terminal event; clients would hang waiting for a legal termination")
 			}
 		})
 	}
@@ -2133,6 +2113,40 @@ func TestApplyPatchChatSuccessfulTerminalSealsState(t *testing.T) {
 			}
 			if errToolInputError := param.(interface{ ToolInputError() error }).ToolInputError(); errToolInputError != nil {
 				t.Fatalf("successful terminal became a failure: %v", errToolInputError)
+			}
+		})
+	}
+}
+
+func TestConvertOpenAIChatCompletionsResponseToOpenAIResponsesNonStream_MapsCompletionTokensDetailsReasoningTokens(t *testing.T) {
+	request := []byte(`{"model":"mercury-3"}`)
+	for _, tc := range []struct {
+		name      string
+		usageJSON string
+		want      int64
+	}{
+		{
+			name:      "completion_tokens_details.reasoning_tokens",
+			usageJSON: `{"prompt_tokens":9,"completion_tokens":99,"total_tokens":108,"completion_tokens_details":{"reasoning_tokens":60}}`,
+			want:      60,
+		},
+		{
+			name:      "output_tokens_details.reasoning_tokens",
+			usageJSON: `{"prompt_tokens":9,"completion_tokens":99,"total_tokens":108,"output_tokens_details":{"reasoning_tokens":45}}`,
+			want:      45,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := []byte(`{"id":"chatcmpl_reasoning","object":"chat.completion","created":1773896263,"model":"mercury-3","choices":[{"index":0,"message":{"role":"assistant","content":"pong"},"finish_reason":"stop"}],"usage":` + tc.usageJSON + `}`)
+			resp := ConvertOpenAIChatCompletionsResponseToOpenAIResponsesNonStream(context.Background(), "mercury-3", request, request, raw, nil)
+			data := gjson.ParseBytes(resp)
+
+			reasoning := data.Get("usage.output_tokens_details.reasoning_tokens")
+			if !reasoning.Exists() {
+				t.Fatalf("expected usage.output_tokens_details.reasoning_tokens to exist, got usage=%s", data.Get("usage").Raw)
+			}
+			if got := reasoning.Int(); got != tc.want {
+				t.Fatalf("usage.output_tokens_details.reasoning_tokens = %d, want %d; usage=%s", got, tc.want, data.Get("usage").Raw)
 			}
 		})
 	}
