@@ -108,16 +108,34 @@ func normalizeCodexTool(tool gjson.Result) ([]byte, bool) {
 
 	rawTool := []byte(tool.Raw)
 	updatedParams, paramsChanged := normalizeCodexParameters(params)
-	if !paramsChanged {
+
+	// Codex 后端对缺省 strict 的 function 工具默认按 strict:true 规范化 schema：
+	// optional 字段全部扩进 required，迫使模型为可选参数编造值，客户端校验失败
+	// 后进入重试循环（2026-10-26 实测：required ["name","script"] 被扩成四项）。
+	// 显式 strict:false 会被上游尊重并保留 optional 语义（四模型实测通过），
+	// 故对未声明 strict 的 function 工具补显式 false。仅覆盖缺省：显式声明不动。
+	strictChanged := false
+	if toolType == "function" && !tool.Get("strict").Exists() {
+		if updated, err := sjson.SetBytes(rawTool, "strict", false); err == nil {
+			rawTool = updated
+			strictChanged = true
+		}
+	}
+
+	if !paramsChanged && !strictChanged {
 		return nil, false
 	}
 
-	updatedTool, errSet := sjson.SetRawBytes(rawTool, "parameters", updatedParams)
-	if errSet != nil {
-		return nil, false
+	updatedTool := rawTool
+	if paramsChanged {
+		var errSet error
+		updatedTool, errSet = sjson.SetRawBytes(rawTool, "parameters", updatedParams)
+		if errSet != nil {
+			return nil, false
+		}
 	}
 
-	log.Debugf("codex: normalized schema for tool %s to avoid upstream abort", tool.Get("name").String())
+	log.Debugf("codex: normalized tool %s (strict default + schema) to avoid upstream abort", tool.Get("name").String())
 	return updatedTool, true
 }
 
