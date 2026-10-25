@@ -27,14 +27,6 @@ import (
 //
 // Returns:
 //   - []byte: The transformed request data in OpenAI chat completions format
-//
-// responsesReasoningFallbackText replaces the legacy "[reasoning unavailable]" placeholder
-// for history turns whose reasoning summary was lost. Qwen-family models parrot bracketed
-// tokens back as new thinking and clients store them verbatim (live 2026-09-30), so the
-// shim carries a single space " " (aligned with 523★ workbuddy2api-hub / OSS consensus:
-// upstream len>0 check passes without trimming, while leaving no semantic text for models to echo).
-const responsesReasoningFallbackText = " "
-
 func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inputRawJSON []byte, stream bool) ([]byte, error) {
 	return convertOpenAIResponsesRequestToOpenAIChatCompletions(modelName, inputRawJSON, stream)
 
@@ -172,7 +164,7 @@ func convertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 				return latestReasoningContent
 			}
 			if hasReasoningInSession {
-				return responsesReasoningFallbackText
+				return "[reasoning unavailable]"
 			}
 			return ""
 		}
@@ -807,7 +799,7 @@ func collectOpenAIResponsesReasoningContent(item gjson.Result) string {
 		})
 	}
 	if reasoningText.Len() == 0 {
-		return responsesReasoningFallbackText
+		return "[reasoning unavailable]"
 	}
 	return reasoningText.String()
 }

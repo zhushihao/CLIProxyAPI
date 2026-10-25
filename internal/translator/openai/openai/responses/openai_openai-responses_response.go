@@ -783,9 +783,6 @@ func ConvertOpenAIChatCompletionsResponseToOpenAIResponses(ctx context.Context, 
 				name, _ = st.ToolIndex.singleCustomName()
 			}
 			if !st.ToolIndex.isApplyPatch(name) && st.FinishReason == "" && (!hasArgs || !gjson.Valid(b.String())) {
-				// shawn: incomplete tool call at stream end must terminate with a legal
-				// event (response.failed), otherwise clients hang waiting.
-				failToolInput(fmt.Errorf("upstream stream ended before tool call arguments were received"))
 				continue
 			}
 

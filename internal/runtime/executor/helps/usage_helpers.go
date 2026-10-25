@@ -75,32 +75,6 @@ type usageExecutor interface {
 	Identifier() string
 }
 
-type usageIdentityOverrideKey struct{}
-
-// usageIdentityOverride lets a delegating executor re-label usage recorded by
-// this package (kimi traffic labelled as kimi upstream, for example).
-type usageIdentityOverride struct {
-	provider     string
-	executorType string
-}
-
-// WithUsageIdentityOverride returns a ctx that re-labels the usage identity
-// for the executor call it is passed into.
-func WithUsageIdentityOverride(ctx context.Context, provider, executorType string) context.Context {
-	return context.WithValue(ctx, usageIdentityOverrideKey{}, &usageIdentityOverride{
-		provider:     provider,
-		executorType: executorType,
-	})
-}
-
-func usageIdentityOverrideFromContext(ctx context.Context) *usageIdentityOverride {
-	if ctx == nil {
-		return nil
-	}
-	override, _ := ctx.Value(usageIdentityOverrideKey{}).(*usageIdentityOverride)
-	return override
-}
-
 func NewExecutorUsageReporter(ctx context.Context, executor usageExecutor, model string, auth *cliproxyauth.Auth) *UsageReporter {
 	provider := ""
 	if executor != nil {
