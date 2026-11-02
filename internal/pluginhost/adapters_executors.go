@@ -736,16 +736,20 @@ func (a *executorAdapter) translateExecutorStreamChunks(ctx context.Context, pre
 	go func() {
 		defer close(out)
 		var param any
+		streamHadErr := false
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case chunk, ok := <-in:
 				if !ok {
-					a.emitTranslatedExecutorStreamTail(ctx, prepared, out, &param)
+					if !streamHadErr {
+						a.emitTranslatedExecutorStreamTail(ctx, prepared, out, &param)
+					}
 					return
 				}
 				if chunk.Err != nil {
+					streamHadErr = true
 					_ = sendExecutorPluginStreamChunk(ctx, out, chunk)
 					continue
 				}

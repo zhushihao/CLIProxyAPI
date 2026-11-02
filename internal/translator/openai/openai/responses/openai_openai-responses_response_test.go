@@ -2151,3 +2151,58 @@ func TestConvertOpenAIChatCompletionsResponseToOpenAIResponsesNonStream_MapsComp
 		})
 	}
 }
+
+func TestConvertOpenAIChatCompletionsResponseToOpenAIResponsesNonStream_EmptyOutputAlwaysArray(t *testing.T) {
+	request := []byte(`{"model":"deepseek-v4.1-flash"}`)
+	// Case 1: empty content with stop
+	rawEmptyContent := []byte(`{"id":"chatcmpl_empty","object":"chat.completion","created":1773896263,"model":"deepseek-v4.1-flash","choices":[{"index":0,"message":{"role":"assistant","content":""},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":0,"total_tokens":10}}`)
+	out := ConvertOpenAIChatCompletionsResponseToOpenAIResponsesNonStream(context.Background(), "deepseek-v4.1-flash", request, request, rawEmptyContent, nil)
+	data := gjson.ParseBytes(out)
+	if !data.Get("output").Exists() {
+		t.Fatalf("expected output field in empty response, got: %s", out)
+	}
+	if !data.Get("output").IsArray() {
+		t.Fatalf("expected output field to be an array, got: %s", out)
+	}
+	if len(data.Get("output").Array()) != 0 {
+		t.Fatalf("expected empty array, got %d items: %s", len(data.Get("output").Array()), out)
+	}
+
+	// Case 2: empty choices
+	rawNoChoices := []byte(`{"id":"chatcmpl_no_choices","object":"chat.completion","created":1773896263,"model":"deepseek-v4.1-flash","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":0,"total_tokens":10}}`)
+	out2 := ConvertOpenAIChatCompletionsResponseToOpenAIResponsesNonStream(context.Background(), "deepseek-v4.1-flash", request, request, rawNoChoices, nil)
+	data2 := gjson.ParseBytes(out2)
+	if !data2.Get("output").Exists() || !data2.Get("output").IsArray() || len(data2.Get("output").Array()) != 0 {
+		t.Fatalf("expected output: [] for no-choices response, got: %s", out2)
+	}
+}
+
+func TestConvertOpenAIChatCompletionsResponseToOpenAIResponses_ReasoningOnlyWithFinishReasonCompletes(t *testing.T) {
+	request := []byte(`{"model":"deepseek-v4.1-flash"}`)
+	chunks := []string{
+		`data: {"id":"resp_reasoning_finish","object":"chat.completion.chunk","created":1773896263,"model":"deepseek-v4.1-flash","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"done thinking"},"finish_reason":"stop"}]}`,
+		`data: [DONE]`,
+	}
+
+	var param any
+	var completedData gjson.Result
+	completedSeen := false
+	for _, line := range chunks {
+		for _, chunk := range ConvertOpenAIChatCompletionsResponseToOpenAIResponses(context.Background(), "deepseek-v4.1-flash", request, request, []byte(line), &param) {
+			event, data := parseOpenAIResponsesSSEEvent(t, chunk)
+			if event == "response.completed" {
+				completedSeen = true
+				completedData = data
+			}
+		}
+	}
+	if !completedSeen {
+		t.Fatal("expected response.completed event when stream has reasoning and explicit finish_reason: stop")
+	}
+	if !completedData.Get("response.output").IsArray() {
+		t.Fatalf("expected response.output to be array, got: %s", completedData.Raw)
+	}
+	if got := completedData.Get("response.output.0.summary.0.text").String(); got != "done thinking" {
+		t.Fatalf("expected reasoning summary 'done thinking', got %q", got)
+	}
+}

@@ -400,9 +400,7 @@ func buildResponsesCompletedEvent(st *oaiToResponsesState, nextSeq func() int) [
 	for _, item := range outputItems {
 		outputs = append(outputs, item.raw)
 	}
-	if len(outputs) > 0 {
-		completed, _ = sjson.SetRawBytes(completed, "response.output", translatorcommon.JoinRawArray(outputs))
-	}
+	completed, _ = sjson.SetRawBytes(completed, "response.output", translatorcommon.JoinRawArray(outputs))
 	if st.UsageSeen {
 		completed, _ = sjson.SetBytes(completed, "response.usage.input_tokens", st.PromptTokens)
 		completed, _ = sjson.SetBytes(completed, "response.usage.input_tokens_details.cached_tokens", st.CachedTokens)
@@ -896,7 +894,7 @@ func ConvertOpenAIChatCompletionsResponseToOpenAIResponses(ctx context.Context, 
 		if hasActiveUnfinishedTool {
 			return out
 		}
-		if len(st.MsgItemAdded) == 0 && len(st.FuncItemAdded) == 0 {
+		if st.FinishReason == "" && len(st.MsgItemAdded) == 0 && len(st.FuncItemAdded) == 0 {
 			return out
 		}
 		st.CompletedEmitted = true
@@ -1215,9 +1213,7 @@ func ConvertOpenAIChatCompletionsResponseToOpenAIResponsesNonStream(_ context.Co
 	if st.ToolInputError() != nil {
 		return []byte(gjson.GetBytes(responsesToolInputFailure(id, 0, st.ToolInputError()), "response").Raw)
 	}
-	if len(outputItems) > 0 {
-		resp, _ = sjson.SetRawBytes(resp, "output", translatorcommon.JoinRawArray(outputItems))
-	}
+	resp, _ = sjson.SetRawBytes(resp, "output", translatorcommon.JoinRawArray(outputItems))
 
 	// usage mapping
 	if usage := root.Get("usage"); usage.Exists() {
@@ -1246,7 +1242,7 @@ func ConvertOpenAIChatCompletionsResponseToOpenAIResponsesNonStream(_ context.Co
 }
 
 func (st *oaiToResponsesState) canFinalizeResponse() bool {
-	if st.ToolInputError() != nil || st.FinishReason == "" || (len(st.MsgItemAdded) == 0 && len(st.FuncItemAdded) == 0) {
+	if st.ToolInputError() != nil || st.FinishReason == "" {
 		return false
 	}
 	for idx := range st.MsgItemAdded {
