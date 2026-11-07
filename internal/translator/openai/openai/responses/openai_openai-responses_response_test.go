@@ -2158,7 +2158,7 @@ func TestConvertOpenAIChatCompletionsResponseToOpenAIResponsesNonStream_EmptyOut
 	// Case 1: empty content with stop
 	rawEmptyContent := []byte(`{"id":"chatcmpl_empty","object":"chat.completion","created":1773896263,"model":"deepseek-v4.1-flash","choices":[{"index":0,"message":{"role":"assistant","content":""},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":0,"total_tokens":10}}`)
 	out := ConvertOpenAIChatCompletionsResponseToOpenAIResponsesNonStream(context.Background(), "deepseek-v4.1-flash", request, request, rawEmptyContent, nil)
-	data := gjson.ParseBytes(out)
+	data := ojson.ParseBytes(out)
 	if !data.Get("output").Exists() {
 		t.Fatalf("expected output field in empty response, got: %s", out)
 	}
@@ -2172,7 +2172,7 @@ func TestConvertOpenAIChatCompletionsResponseToOpenAIResponsesNonStream_EmptyOut
 	// Case 2: empty choices
 	rawNoChoices := []byte(`{"id":"chatcmpl_no_choices","object":"chat.completion","created":1773896263,"model":"deepseek-v4.1-flash","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":0,"total_tokens":10}}`)
 	out2 := ConvertOpenAIChatCompletionsResponseToOpenAIResponsesNonStream(context.Background(), "deepseek-v4.1-flash", request, request, rawNoChoices, nil)
-	data2 := gjson.ParseBytes(out2)
+	data2 := ojson.ParseBytes(out2)
 	if !data2.Get("output").Exists() || !data2.Get("output").IsArray() || len(data2.Get("output").Array()) != 0 {
 		t.Fatalf("expected output: [] for no-choices response, got: %s", out2)
 	}
@@ -2186,7 +2186,7 @@ func TestConvertOpenAIChatCompletionsResponseToOpenAIResponses_ReasoningOnlyWith
 	}
 
 	var param any
-	var completedData gjson.Result
+	var completedData ojson.Result
 	completedSeen := false
 	for _, line := range chunks {
 		for _, chunk := range ConvertOpenAIChatCompletionsResponseToOpenAIResponses(context.Background(), "deepseek-v4.1-flash", request, request, []byte(line), &param) {
