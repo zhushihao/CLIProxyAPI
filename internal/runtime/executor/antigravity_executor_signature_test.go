@@ -234,7 +234,7 @@ func TestAntigravityDefaultFingerprintsObfuscatesSystemInstructionOnly(t *testin
 	payload := []byte(`{"request":{"systemInstruction":{"parts":[{"text":"You are a Claude agent, built on Anthropic's Claude Agent SDK.\n<system-conventions>\nRFC 2119: MUST, REQUIRED, SHOULD, RECOMMENDED, MAY, OPTIONAL.\n</system-conventions>"}]},"contents":[{"role":"user","parts":[{"text":"Claude Agent SDK and RFC 2119 remain unchanged in user content"}]}]}}`)
 
 	got := executor.obfuscateSensitiveWords(payload)
-	systemText := gjson.GetBytes(got, "request.systemInstruction.parts.0.text").String()
+	systemText := ojson.GetBytes(got, "request.systemInstruction.parts.0.text").String()
 	if strings.Contains(systemText, "Claude Agent SDK") {
 		t.Fatalf("system instruction retained raw 'Claude Agent SDK': %q", systemText)
 	}
@@ -246,7 +246,7 @@ func TestAntigravityDefaultFingerprintsObfuscatesSystemInstructionOnly(t *testin
 	}
 
 	wantContent := "Claude Agent SDK and RFC 2119 remain unchanged in user content"
-	if contentText := gjson.GetBytes(got, "request.contents.0.parts.0.text").String(); contentText != wantContent {
+	if contentText := ojson.GetBytes(got, "request.contents.0.parts.0.text").String(); contentText != wantContent {
 		t.Fatalf("content text = %q, want unchanged %q", contentText, wantContent)
 	}
 }
